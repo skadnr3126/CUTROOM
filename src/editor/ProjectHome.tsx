@@ -5,7 +5,7 @@ import { useCutroomEvent } from "./useCutroomEvent";
 import "./ProjectHome.css";
 
 type RecentProject = { id: string; title: string | null; path: string };
-type OpenProject = {type: "browse"} | {type: "recent"; id: string} | {type: "create"; name: string};
+type OpenProject = {type: "browse" | "openFile"} | {type: "recent"; id: string} | {type: "create"; name: string};
 
 export function Brand() {
   return <><span className="brand-mark" aria-hidden="true"><i /><i /></span><strong>컷룸</strong></>;
@@ -63,19 +63,34 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
     dialog.current?.showModal();
   }
 
+  async function forget(id: string) {
+    if (switching.current) return;
+    switching.current = true;
+    setWorking(true);
+    setError("");
+    try {
+      await invoke("project_forget", {id});
+      setProjects(items => items?.filter(item => item.id !== id) ?? null);
+    } catch (e) { setError(String(e)); }
+    finally { switching.current = false; setWorking(false); }
+  }
+
   return <main className="project-home">
     <header className="home-header"><div className="brand"><Brand /></div><span>프로젝트 홈</span></header>
     <div className="home-content">
       <div className="home-title">
         <h1>프로젝트</h1>
         <div className="home-actions">
-          <button className="button" disabled={working} onClick={() => void open({type:"browse"})}>기존 폴더 열기</button>
-          <button className="button primary" disabled={working} onClick={newProject}><span aria-hidden="true">＋</span> 새 프로젝트</button>
+          <button className="button primary" disabled={working} title="컷룸 프로젝트의 project.json 파일을 선택합니다."
+            onClick={() => void open({type:"openFile"})}>기존 프로젝트 열기</button>
+          <button className="button" disabled={working} onClick={newProject}><span aria-hidden="true">＋</span> 새 프로젝트</button>
         </div>
       </div>
       {session.notice && <p className="home-notice" role="status">{session.notice}</p>}
       <section aria-labelledby="recent-heading">
-        <h2 id="recent-heading">최근 프로젝트</h2>
+        <div className="home-recent-header"><h2 id="recent-heading">최근 프로젝트</h2>
+          <button className="text-button" disabled={working} onClick={() => void open({type:"browse"})}>기존 폴더 열기</button>
+        </div>
         {projects === null && !error && <p role="status">프로젝트 목록을 불러오는 중…</p>}
         {projects?.length === 0 && <p>최근에 연 프로젝트가 없습니다.</p>}
         <ul className="home-projects">{projects?.map(project => {
@@ -85,7 +100,10 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
             <span className="home-folder" aria-hidden="true" />
             <span className="home-project-info"><strong>{project.title ?? "열 수 없는 프로젝트"}</strong><small>{project.path}</small></span>
             <span className="home-open">{active ? "이어서 편집" : project.title === null ? "폴더 확인 필요" : "열기"}{project.title !== null && <span aria-hidden="true"> →</span>}</span>
-          </button></li>;
+          </button><button className="text-button forget-project" disabled={working}
+            aria-label={`${project.title ?? project.path} 최근 목록에서 제거`}
+            title="홈 목록에서만 제거합니다. 프로젝트 폴더는 보관됩니다."
+            onClick={() => void forget(project.id)}>목록에서 제거</button></li>;
         })}</ul>
       </section>
       {error && !dialog.current?.open && <p className="home-error" role="alert">{error} {projects === null && <button className="button compact" onClick={() => {setError(""); setRefresh(n => n + 1);}}>다시 시도</button>}</p>}

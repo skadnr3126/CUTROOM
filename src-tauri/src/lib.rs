@@ -29,6 +29,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             project::library::project_session,
             project::library::project_recent,
+            project::library::project_forget,
             project::library::project_switch,
             project::library::project_save_draft,
             project::project_load,

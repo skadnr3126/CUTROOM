@@ -19,6 +19,8 @@ use uuid::Uuid;
 struct Entry {
     id: Uuid,
     path: PathBuf,
+    #[serde(default)]
+    hidden: bool,
 }
 
 struct OpenProjects {
@@ -55,6 +57,7 @@ impl Library {
         let legacy_entry = Entry {
             id: Uuid::nil(),
             path: legacy.directory(),
+            hidden: false,
         };
         let mut notice = None;
         let mut recent: Vec<Entry> = match fs::read(data.join("recent-projects.json")) {
@@ -74,10 +77,11 @@ impl Library {
         if !recent.iter().any(|e| e.id.is_nil()) {
             recent.push(legacy_entry);
         }
-        let entry = &recent[0];
-        let current = if entry.id.is_nil() && entry.path == legacy.directory() {
-            legacy
-        } else {
+        let current = if let Some(entry) = recent
+            .iter()
+            .find(|e| !e.hidden)
+            .filter(|e| !(e.id.is_nil() && e.path == legacy.directory()))
+        {
             let store = ProjectStore::at(data.clone(), entry.path.clone(), entry.id);
             if store.load().is_ok() || entry.id.is_nil() {
                 store
@@ -86,6 +90,8 @@ impl Library {
                     Some("마지막 프로젝트 폴더를 열 수 없어 기본 프로젝트를 열었습니다.".into());
                 legacy
             }
+        } else {
+            legacy
         };
         Ok(Self {
             data,
@@ -142,7 +148,7 @@ impl Library {
             None => path,
         };
         let path = dunce::canonicalize(&path).map_err(|_| "프로젝트 폴더를 찾을 수 없습니다.")?;
-        let entry = state
+        let mut entry = state
             .recent
             .iter()
             .find(|e| e.path == path || dunce::canonicalize(&e.path).is_ok_and(|p| p == path))
@@ -150,10 +156,15 @@ impl Library {
             .unwrap_or_else(|| Entry {
                 id: Uuid::new_v4(),
                 path: path.clone(),
+                hidden: false,
             });
+        entry.hidden = false;
         let mut store = state
             .known
             .get(&entry.id)
+            .filter(|s| {
+                s.directory() == path || dunce::canonicalize(s.directory()).is_ok_and(|p| p == path)
+            })
             .cloned()
             .unwrap_or_else(|| ProjectStore::at(self.data.clone(), path.clone(), entry.id));
         store.load()?;
@@ -176,7 +187,27 @@ impl Library {
             .lock()
             .map_err(|_| "프로젝트 목록을 열 수 없습니다.")?
             .recent
-            .clone())
+            .iter()
+            .filter(|entry| !entry.hidden)
+            .cloned()
+            .collect())
+    }
+
+    fn forget(&self, id: Uuid, session: Uuid) -> Result<(), String> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| "프로젝트 목록을 열 수 없습니다.")?;
+        if state.current.session != session {
+            return Err("열린 프로젝트가 바뀌었습니다.".into());
+        }
+        let mut entries = state.recent.clone();
+        if let Some(entry) = entries.iter_mut().find(|e| e.id == id && !e.hidden) {
+            entry.hidden = true;
+            atomic_json(&self.data.join("recent-projects.json"), &entries)?;
+            state.recent = entries;
+        }
+        Ok(())
     }
 }
 
@@ -249,6 +280,15 @@ pub(crate) async fn project_save_draft(store: ProjectStore, draft: Value) -> Res
 }
 
 #[tauri::command]
+pub(crate) fn project_forget(
+    library: State<'_, Library>,
+    store: ProjectStore,
+    id: Uuid,
+) -> Result<(), String> {
+    library.forget(id, store.session)
+}
+
+#[tauri::command]
 pub(crate) async fn project_recent(library: State<'_, Library>) -> Result<Value, String> {
     let recent = library.recent()?;
     let data = library.data.clone();
@@ -269,7 +309,21 @@ pub(crate) async fn project_recent(library: State<'_, Library>) -> Result<Value,
 pub(crate) enum Open {
     Create { name: String },
     Browse,
+    OpenFile,
     Recent { id: Uuid },
+}
+
+fn manifest_directory(file: &Path) -> Result<PathBuf, String> {
+    if !file.is_file()
+        || !file
+            .file_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case("project.json"))
+    {
+        return Err("컷룸 프로젝트 폴더 안의 project.json 파일을 선택해 주세요.".into());
+    }
+    file.parent()
+        .map(Path::to_owned)
+        .ok_or_else(|| "프로젝트 폴더를 확인해 주세요.".into())
 }
 
 fn create(parent: &Path, name: &str) -> Result<PathBuf, String> {
@@ -326,6 +380,21 @@ pub(crate) async fn project_switch(
                     .path,
                 None,
             ),
+            Open::OpenFile => {
+                let Some(file) = app
+                    .dialog()
+                    .file()
+                    .set_title("컷룸 프로젝트 열기 · project.json 선택")
+                    .add_filter("컷룸 프로젝트 (project.json)", &["json"])
+                    .blocking_pick_file()
+                else {
+                    return Ok(false);
+                };
+                let file = file
+                    .into_path()
+                    .map_err(|_| "로컬 프로젝트 파일을 선택해 주세요.")?;
+                (manifest_directory(&file)?, None)
+            }
             choice => {
                 let title = if matches!(choice, Open::Create { .. }) {
                     "새 프로젝트 폴더를 만들 위치"
@@ -349,7 +418,9 @@ pub(crate) async fn project_switch(
                 )
             }
         };
-        library.activate(path, store.session, name.as_deref(), |media| grant_media(&app, media))?;
+        library.activate(path, store.session, name.as_deref(), |media| {
+            grant_media(&app, media)
+        })?;
         Ok(true)
     })
     .await

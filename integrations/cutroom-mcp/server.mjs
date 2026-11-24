@@ -63,4 +63,7 @@ tool("register_output", "Register a finished local image, video or audio file in
 tool("import_video", "Import a local MP4 into the live source bin.", { path: z.string().min(1) });
 tool("replace_video", "Switch a single video to an imported equal-duration source, preserving timings and overlays.", { sceneId, expected, assetId: z.string().uuid() });
 tool("export_scene", "Render this scene and its saved captions to a new local MP4. Existing output files are protected.", { sceneId, expected, path: z.string().min(1) });
-await server.connect(new StdioServerTransport());
+server.connect(new StdioServerTransport()).catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});

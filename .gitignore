@@ -10,6 +10,8 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+/integrations/cutroom-mcp/bundle/*
+!/integrations/cutroom-mcp/bundle/NOTICE.txt
 *.local
 
 # Editor directories and files

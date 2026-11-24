@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <ComponentGroup Id="CutroomMcpRegistration" />
+    <CustomAction Id="CutroomRegisterMcp" FileKey="Path" Execute="deferred" Impersonate="yes"
+      ExeCommand="--register-codex-mcp" Return="check" />
+    <CustomAction Id="CutroomUnregisterMcp" FileKey="Path" Execute="deferred" Impersonate="yes"
+      ExeCommand="--unregister-codex-mcp" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="CutroomRegisterMcp" After="InstallFiles">NOT (REMOVE ~= "ALL")</Custom>
+      <Custom Action="CutroomUnregisterMcp" Before="RemoveFiles">REMOVE ~= "ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+  </Fragment>
+</Wix>

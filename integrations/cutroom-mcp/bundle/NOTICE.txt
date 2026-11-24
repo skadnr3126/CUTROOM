@@ -1,0 +1,2 @@
+Cutroom MCP runs locally over standard input and output.
+The bundled Node.js license and JavaScript dependency licenses accompany this runtime.

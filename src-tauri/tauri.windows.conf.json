@@ -1,0 +1,12 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build && node integrations/cutroom-mcp/build.mjs"
+  },
+  "bundle": {
+    "resources": { "../integrations/cutroom-mcp/bundle/": "mcp/" },
+    "windows": {
+      "nsis": { "installMode": "currentUser", "languages": ["Korean", "English"], "installerHooks": "installer/codex.nsh" },
+      "wix": { "language": "ko-KR", "fragmentPaths": ["installer/codex.wxs"], "componentGroupRefs": ["CutroomMcpRegistration"] }
+    }
+  }
+}

@@ -7,7 +7,12 @@
 .home-actions, .new-project footer { display: flex; gap: 8px; }
 .home-actions .button, .new-project .button { min-height: 37px; padding-inline: 14px; }
 .home-content h2 { margin: 0 0 13px; font-size: 14px; font-weight: 600; color: var(--muted); }
+.home-recent-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+.home-recent-header h2 { margin: 0; }
 .home-projects { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }
+.home-projects li { display: flex; align-items: center; gap: 10px; }
+.home-projects .home-project { min-width: 0; }
+.forget-project { flex-shrink: 0; }
 .home-project { width: 100%; display: flex; align-items: center; gap: 20px; text-align: left; padding: 18px 22px;
   color: inherit; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; }
 .home-project:hover:enabled { background: #303a32; border-color: #71836d; }

@@ -2,6 +2,43 @@ use super::*;
 use crate::project::Edit;
 
 #[test]
+fn removing_recent_entries_preserves_project_files_and_reopening_restores_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let data = temp.path().join("app");
+    let library = Library::open(data.clone()).unwrap();
+    let legacy = library.current().unwrap();
+    let folder = create(temp.path(), "노트북 복사본").unwrap();
+    let file = folder.join("project.json");
+    fs::write(folder.join("script-draft.json"), "{}").unwrap();
+    assert!(manifest_directory(&folder.join("script-draft.json")).is_err());
+    let opened = library
+        .activate(
+            manifest_directory(&file).unwrap(),
+            legacy.session,
+            None,
+            |_| Ok(()),
+        )
+        .unwrap();
+    let content = fs::read(&file).unwrap();
+    library.forget(legacy.id, opened.session).unwrap();
+    library.forget(opened.id, opened.session).unwrap();
+    assert!(library.recent().unwrap().is_empty());
+    let next = Library::open(data).unwrap();
+    assert!(next.recent().unwrap().is_empty());
+    let restored = next
+        .activate(
+            manifest_directory(&file).unwrap(),
+            next.current().unwrap().session,
+            None,
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_eq!(restored.id, opened.id);
+    assert_eq!(next.recent().unwrap().len(), 1);
+    assert_eq!(fs::read(file).unwrap(), content);
+}
+
+#[test]
 fn folder_switches_preserve_legacy_data_and_isolate_writes_and_undo() {
     let tmp = tempfile::tempdir().unwrap();
     let data = tmp.path().join("app-data");
