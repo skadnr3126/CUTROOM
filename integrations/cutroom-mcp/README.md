@@ -31,6 +31,8 @@ codex mcp add cutroom -- (Get-Command node.exe).Source (Resolve-Path integration
 
 ## 편집 흐름
 
+“마지막 구간 이름을 ‘마무리’로 바꿔 줘”, “평딜 구간을 전투 분석 바로 앞으로 옮겨 줘”처럼 요청할 수 있습니다. `rename_scene`은 `timeline`에서 읽은 구간 ID와 리비전, 새 이름을 받습니다. `move_scene`은 이동할 구간 ID와 기준 구간 ID(`targetId`)를 받아 `after: false`이면 바로 앞에, `true`이면 바로 뒤에 배치합니다. 두 작업 모두 컷룸에서 실행 취소할 수 있습니다.
+
 1. `timeline`으로 구간을 찾고 `scene`으로 저장된 자막과 리비전을 읽습니다.
 2. `captions`에 전체 자막 목록과 읽었던 리비전을 보냅니다. 시간은 구간 시작 기준 밀리초입니다. 다른 곳에서 먼저 저장했다면 구간을 다시 읽고 변경할 자막만 반영합니다.
 3. `seek`로 문구가 보이는 시점으로 이동합니다. 컷룸에서 수동으로 고친 뒤에도 `scene`으로 다시 읽을 수 있습니다.

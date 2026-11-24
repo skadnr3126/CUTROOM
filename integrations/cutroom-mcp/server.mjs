@@ -50,6 +50,12 @@ tool("timeline", "List the open Cutroom project's scenes, durations, IDs and rev
 tool("get_selection", "Read the active editor selection and timeline playhead, in milliseconds.", {});
 tool("get_asset", "Resolve an asset in the open project to its media path, duration and audio metadata.", {assetId:z.string().uuid()});
 tool("scene", "Read a scene including its captions, source placements and current revision.", { sceneId });
+tool("rename_scene", "Rename a timeline scene. Read its revision from timeline first. An empty name restores the default numbered label. Undoable.", {
+  sceneId, expected, name: z.string().describe("New single-line scene name")
+});
+tool("move_scene", "Move a timeline scene immediately before or after another scene. Use the IDs from timeline. Undoable.", {
+  sceneId, targetId: z.string().uuid().describe("ID of the reference scene"), after: z.boolean().describe("true for after, false for before")
+});
 tool("captions", "Set the final complete timed caption list through the editor's undoable save. Read the scene first and preserve other captions. Optionally show the edited time.", {
   sceneId, expected, cues: z.array(cue), atMs: atMs.optional()
 });

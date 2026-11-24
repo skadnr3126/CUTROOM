@@ -22,6 +22,16 @@ pub(crate) enum Command {
     Scene {
         scene_id: Uuid,
     },
+    RenameScene {
+        scene_id: Uuid,
+        expected: u32,
+        name: String,
+    },
+    MoveScene {
+        scene_id: Uuid,
+        target_id: Uuid,
+        after: bool,
+    },
     Captions {
         scene_id: Uuid,
         expected: u32,
@@ -122,6 +132,30 @@ pub(crate) fn execute(
         Command::Scene { scene_id } => {
             let scene = &project.scenes[project.scene_index(scene_id)?];
             return Ok(json!(scene));
+        }
+        Command::RenameScene {
+            scene_id,
+            expected,
+            name,
+        } => {
+            let view = store.edit(Edit::RenameScene {
+                id: scene_id,
+                expected,
+                name,
+            })?;
+            (Some(view), None)
+        }
+        Command::MoveScene {
+            scene_id,
+            target_id,
+            after,
+        } => {
+            let view = store.edit(Edit::MoveScene {
+                id: scene_id,
+                target_id,
+                after,
+            })?;
+            (Some(view), None)
         }
         Command::Seek { scene_id, at_ms } => {
             let scene = &project.scenes[project.scene_index(scene_id)?];
