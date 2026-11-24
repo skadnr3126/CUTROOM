@@ -12,6 +12,10 @@ use tempfile::{NamedTempFile, TempDir};
 use uuid::Uuid;
 use zip::{CompressionMethod, ZipArchive, ZipWriter, write::SimpleFileOptions};
 
+mod progress;
+use progress::ByteTransfer;
+pub(crate) use progress::PackageProgress;
+
 const HEADER: &str = "cutroom-package.json";
 const ID_FILE: &str = ".cutroom-project-id";
 #[cfg(test)]
@@ -81,7 +85,11 @@ fn ignored(name: &str, root: bool) -> bool {
         || lower.starts_with(".tmp")
 }
 
-fn add_tree(zip: &mut ZipWriter<File>, dir: &Path, prefix: &str) -> Result<(), String> {
+fn visit_tree(
+    dir: &Path,
+    prefix: &str,
+    visit: &mut impl FnMut(&Path, &str, &fs::Metadata) -> Result<(), String>,
+) -> Result<(), String> {
     for entry in fs::read_dir(dir).map_err(err)? {
         let entry = entry.map_err(err)?;
         let name = entry
@@ -102,40 +110,11 @@ fn add_tree(zip: &mut ZipWriter<File>, dir: &Path, prefix: &str) -> Result<(), S
                 "연결된 파일은 원본을 프로젝트에 복사해 주세요. {rel}"
             ));
         }
-        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        if meta.is_dir() || meta.is_file() {
+            visit(&path, &rel, &meta)?;
+        }
         if meta.is_dir() {
-            let folder = format!("{rel}/");
-            zip.add_directory(&folder, stored).map_err(err)?;
-            add_tree(zip, &path, &folder)?;
-        } else if meta.is_file() {
-            let text = path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
-                matches!(
-                    s.to_ascii_lowercase().as_str(),
-                    "json" | "ass" | "srt" | "vtt" | "txt" | "md"
-                )
-            });
-            let options = if text {
-                stored
-                    .compression_method(CompressionMethod::Deflated)
-                    .compression_level(Some(1))
-            } else {
-                stored
-            };
-            zip.start_file(
-                &rel,
-                options.large_file(meta.len() >= u32::MAX as u64 - 65536),
-            )
-            .map_err(err)?;
-            let mut file = File::open(&path).map_err(|e| format!("{rel}: {e}"))?;
-            let bytes = io::copy(&mut file, zip).map_err(err)?;
-            if bytes != meta.len()
-                || file.metadata().map_err(err)?.modified().map_err(err)?
-                    != meta.modified().map_err(err)?
-            {
-                return Err(format!(
-                    "내보내는 중 파일이 변경되었습니다. 다시 시도해 주세요. {rel}"
-                ));
-            }
+            visit_tree(&path, &format!("{rel}/"), visit)?;
         }
     }
     Ok(())
@@ -151,7 +130,11 @@ fn check_assets(project: &Project, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn export(store: &ProjectStore, dest: &Path) -> Result<(), String> {
+pub(super) fn export(
+    store: &ProjectStore,
+    dest: &Path,
+    mut report: impl FnMut(PackageProgress),
+) -> Result<(), String> {
     let root = store.directory();
     let parent = dest.parent().ok_or("저장 폴더를 선택해 주세요.")?;
     if dunce::canonicalize(parent)
@@ -198,11 +181,55 @@ pub(super) fn export(store: &ProjectStore, dest: &Path) -> Result<(), String> {
     let json = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .compression_level(Some(1));
-    zip.start_file(HEADER, json).map_err(err)?;
-    serde_json::to_writer(&mut zip, &header).map_err(err)?;
-    zip.start_file("project.json", json).map_err(err)?;
-    serde_json::to_writer(&mut zip, &project).map_err(err)?;
-    add_tree(&mut zip, &root, "")?;
+    let metadata = [
+        (HEADER, serde_json::to_vec(&header).map_err(err)?),
+        ("project.json", serde_json::to_vec(&project).map_err(err)?),
+    ];
+    let mut total: u64 = metadata.iter().map(|(_, data)| data.len() as u64).sum();
+    visit_tree(&root, "", &mut |_, _, meta| {
+        if meta.is_file() {
+            total = total
+                .checked_add(meta.len())
+                .ok_or("패키지 용량을 확인할 수 없습니다.")?;
+        }
+        Ok(())
+    })?;
+    let mut transfer = ByteTransfer::new(total, |p| report(PackageProgress::Packing(p)));
+    for (name, data) in metadata {
+        zip.start_file(name, json).map_err(err)?;
+        transfer.copy(data.as_slice(), &mut zip, data.len() as u64, name)?;
+    }
+    visit_tree(&root, "", &mut |path, rel, meta| {
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        if meta.is_dir() {
+            zip.add_directory(format!("{rel}/"), stored).map_err(err)?;
+            return Ok(());
+        }
+        let text = path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
+            matches!(
+                s.to_ascii_lowercase().as_str(),
+                "json" | "ass" | "srt" | "vtt" | "txt" | "md"
+            )
+        });
+        let options = if text { json } else { stored };
+        zip.start_file(
+            rel,
+            options.large_file(meta.len() >= u32::MAX as u64 - 65536),
+        )
+        .map_err(err)?;
+        let mut file = File::open(path).map_err(|e| format!("{rel}: {e}"))?;
+        transfer.copy(&mut file, &mut zip, meta.len(), rel)?;
+        if file.metadata().map_err(err)?.modified().map_err(err)? != meta.modified().map_err(err)? {
+            return Err(format!(
+                "내보내는 중 파일이 변경되었습니다. 다시 시도해 주세요. {rel}"
+            ));
+        }
+        Ok(())
+    })?;
+    if !transfer.complete() {
+        return Err("내보내는 중 프로젝트 파일이 변경되었습니다. 다시 시도해 주세요.".into());
+    }
+    report(PackageProgress::Finalizing);
     zip.finish().map_err(err)?.sync_all().map_err(err)?;
     tmp.persist(dest).map_err(err)?;
     Ok(())
@@ -211,22 +238,6 @@ pub(super) fn export(store: &ProjectStore, dest: &Path) -> Result<(), String> {
 pub(super) struct Package {
     zip: ZipArchive<File>,
     pub header: Header,
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-#[serde(
-    tag = "stage",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub(crate) enum ImportProgress {
-    Extracting {
-        percent: u8,
-        written_bytes: u64,
-        total_bytes: u64,
-    },
-    Verifying,
-    Opening,
 }
 
 impl Package {
@@ -256,7 +267,7 @@ impl Package {
         &mut self,
         parent: &Path,
         copy: bool,
-        mut report: impl FnMut(ImportProgress),
+        mut report: impl FnMut(PackageProgress),
     ) -> Result<TempDir, String> {
         let stage = tempfile::Builder::new()
             .prefix(".cutroom-import-")
@@ -274,14 +285,7 @@ impl Package {
         if total > fs2::available_space(parent).map_err(err)? {
             return Err("가져올 폴더의 여유 공간이 부족합니다.".into());
         }
-        let mut buffer = vec![0u8; 256 * 1024];
-        let mut written = 0u64;
-        let mut last_percent = 0;
-        report(ImportProgress::Extracting {
-            percent: 0,
-            written_bytes: 0,
-            total_bytes: total,
-        });
+        let mut transfer = ByteTransfer::new(total, |p| report(PackageProgress::Extracting(p)));
         let mut seen = HashSet::new();
         for i in 0..self.zip.len() {
             let mut file = self.zip.by_index(i).map_err(err)?;
@@ -314,36 +318,9 @@ impl Package {
                 .write(true)
                 .open(out)
                 .map_err(err)?;
-            let mut file_bytes = 0u64;
-            loop {
-                let n = match file.read(&mut buffer) {
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    result => result.map_err(err)?,
-                };
-                if n == 0 {
-                    break;
-                }
-                if n as u64 > size - file_bytes {
-                    return Err(format!("패키지 파일의 크기가 일치하지 않습니다. {name}"));
-                }
-                dest.write_all(&buffer[..n]).map_err(err)?;
-                file_bytes += n as u64;
-                written += n as u64;
-                let percent = (u128::from(written) * 100 / u128::from(total)) as u8;
-                if percent != last_percent {
-                    report(ImportProgress::Extracting {
-                        percent,
-                        written_bytes: written,
-                        total_bytes: total,
-                    });
-                    last_percent = percent;
-                }
-            }
-            if file_bytes != size {
-                return Err(format!("패키지 파일의 크기가 일치하지 않습니다. {name}"));
-            }
+            transfer.copy(&mut file, &mut dest, size, &name)?;
         }
-        report(ImportProgress::Verifying);
+        report(PackageProgress::Verifying);
         let store = ProjectStore::at(parent.into(), stage.path().into(), Uuid::new_v4());
         let project = store.load()?;
         if project.title != self.header.title {

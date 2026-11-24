@@ -28,7 +28,32 @@ fn package_round_trip_keeps_media_ids_captions_draft_and_user_files() {
     )
     .unwrap();
     let target = tmp.path().join("백업.cutroom.zip");
-    export(&store, &target).unwrap();
+    let mut packing = Vec::new();
+    export(&store, &target, |event| packing.push(event)).unwrap();
+    assert_eq!(packing.pop(), Some(PackageProgress::Finalizing));
+    let points: Vec<_> = packing
+        .iter()
+        .map(|event| match event {
+            PackageProgress::Packing(p) => *p,
+            _ => panic!("unexpected export stage"),
+        })
+        .collect();
+    assert_eq!(points[0].written_bytes, 0);
+    assert!(points.iter().any(|p| (20..80).contains(&p.percent)));
+    assert!(
+        points
+            .windows(2)
+            .all(|pair| pair[0].percent < pair[1].percent)
+    );
+    let last = points.last().unwrap();
+    assert_eq!(last.percent, 100);
+    assert_eq!(last.total_bytes, last.written_bytes);
+    assert_eq!(
+        json!(packing.last().unwrap()),
+        json!({
+            "stage":"packing", "percent":100, "writtenBytes":last.total_bytes, "totalBytes":last.total_bytes
+        })
+    );
     let mut archive = Package::open(&target).unwrap();
     assert_eq!(
         archive
@@ -39,6 +64,10 @@ fn package_round_trip_keeps_media_ids_captions_draft_and_user_files() {
         CompressionMethod::Stored
     );
     assert!(archive.zip.by_name("project.lock").is_err());
+    assert_eq!(
+        archive.zip.decompressed_size().unwrap(),
+        u128::from(last.total_bytes)
+    );
     let lineage = archive.header.id;
     assert_eq!(identity(&root, store.id).unwrap(), lineage);
     let laptop = tmp.path().join("laptop");
@@ -48,15 +77,15 @@ fn package_round_trip_keeps_media_ids_captions_draft_and_user_files() {
     let stage = archive
         .unpack(&laptop, false, |event| updates.push(event))
         .unwrap();
-    assert_eq!(updates.pop(), Some(ImportProgress::Verifying));
+    assert_eq!(updates.pop(), Some(PackageProgress::Verifying));
     let points: Vec<_> = updates
         .iter()
         .map(|event| match event {
-            ImportProgress::Extracting {
+            PackageProgress::Extracting(progress::Bytes {
                 percent,
                 written_bytes,
                 total_bytes,
-            } => {
+            }) => {
                 assert_eq!(u64::from(*percent), written_bytes * 100 / total_bytes);
                 (*percent, *written_bytes)
             }
@@ -89,7 +118,7 @@ fn package_round_trip_keeps_media_ids_captions_draft_and_user_files() {
         fs::read(root.join("script-draft.json")).unwrap()
     );
     let back = tmp.path().join("다시.cutroom.zip");
-    export(&restored, &back).unwrap();
+    export(&restored, &back, |_| {}).unwrap();
     assert_eq!(Package::open(&back).unwrap().header.id, lineage);
     let copy = archive.unpack(&laptop, true, |_| {}).unwrap();
     assert_ne!(identity(copy.path(), Uuid::nil()).unwrap(), lineage);

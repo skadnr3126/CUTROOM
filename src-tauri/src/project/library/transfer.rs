@@ -57,6 +57,7 @@ pub(crate) async fn project_export_package(
     app: AppHandle,
     store: ProjectStore,
     id: Uuid,
+    progress: tauri::ipc::Channel<package::PackageProgress>,
 ) -> Result<Option<PathBuf>, String> {
     run_io(move || {
         let library = app.state::<Library>();
@@ -94,7 +95,9 @@ pub(crate) async fn project_export_package(
                 ));
             }
         }
-        package::export(&source, &path)?;
+        package::export(&source, &path, |event| {
+            let _ = progress.send(event);
+        })?;
         Ok(Some(path))
     })
     .await
@@ -159,7 +162,7 @@ mod tests {
             })
             .unwrap();
         let file = tmp.path().join("편집본.cutroom.zip");
-        package::export(&source, &file).unwrap();
+        package::export(&source, &file, |_| {}).unwrap();
         let mut archive = Package::open(&file).unwrap();
         let old = existing(&library, &archive.header).unwrap().unwrap();
         assert_eq!(old.id, source.id);
@@ -189,7 +192,7 @@ pub(crate) async fn project_import_package(
     store: ProjectStore,
     preview: Preview,
     mode: Mode,
-    progress: tauri::ipc::Channel<package::ImportProgress>,
+    progress: tauri::ipc::Channel<package::PackageProgress>,
 ) -> Result<bool, String> {
     run_io(move || {
         let library = app.state::<Library>();
@@ -238,7 +241,7 @@ pub(crate) async fn project_import_package(
         if existing(&library, &archive.header)? != preview.existing {
             return Err("가져오는 동안 기존 프로젝트가 변경되었습니다. 다시 선택해 주세요.".into());
         }
-        let _ = progress.send(package::ImportProgress::Opening);
+        let _ = progress.send(package::PackageProgress::Opening);
         let path = package::publish(stage, &parent, &archive.header.title)?;
         library
             .activate_replacing(

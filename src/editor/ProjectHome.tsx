@@ -6,8 +6,8 @@ import { useCutroomEvent } from "./useCutroomEvent";
 import "./ProjectHome.css";
 
 type RecentProject = { id: string; title: string | null; path: string };
-type ImportProgress = {stage: "extracting"; percent: number; writtenBytes: number; totalBytes: number}
-  | {stage: "verifying" | "opening"};
+type PackageProgress = {stage: "extracting" | "packing"; percent: number; writtenBytes: number; totalBytes: number}
+  | {stage: "verifying" | "opening" | "finalizing"};
 const mb = (bytes: number) => (bytes / 1_000_000).toLocaleString("ko-KR", {maximumFractionDigits: 1});
 type PackagePreview = {
   path: string; header: {version: number; id: string; title: string; editedMs: number};
@@ -30,7 +30,7 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
   const conflict = useRef<HTMLDialogElement>(null);
   const [incoming, setIncoming] = useState<PackagePreview | null>(null);
   const [status, setStatus] = useState("");
-  const [progress, setProgress] = useState<ImportProgress | null>(null);
+  const [progress, setProgress] = useState<PackageProgress | null>(null);
 
   useEffect(() => {
     if (incoming) conflict.current?.showModal();
@@ -48,22 +48,24 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
     finally { switching.current = false; setWorking(false); }
   }
 
-  async function importPackage(preview: PackagePreview, mode: "new" | "replace" | "copy") {
-    setIncoming(null);
-    setStatus("프로젝트 가져오기 준비 중…");
+  async function withProgress<T>(command: string, args: Record<string, unknown>) {
     let active = true;
-    const channel = new Channel<ImportProgress>(update => {
+    const channel = new Channel<PackageProgress>(update => {
       if (active) setProgress(update);
     });
     try {
-      if (await invoke<boolean>("project_import_package", {preview, mode, progress: channel})) {
-        window.location.replace("?view=editor");
-      }
+      return await invoke<T>(command, {...args, progress: channel});
     } finally {
       active = false;
       setProgress(null);
-      setStatus("");
     }
+  }
+
+  async function importPackage(preview: PackagePreview, mode: "new" | "replace" | "copy") {
+    setIncoming(null);
+    setStatus("프로젝트 가져오기 준비 중…");
+    if (await withProgress<boolean>("project_import_package", {preview, mode})) window.location.replace("?view=editor");
+    setStatus("");
   }
 
   function pickPackage() {
@@ -76,8 +78,8 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
   }
 
   function exportPackage(id: string) {
-    void transfer("프로젝트 패키지를 내보내는 중…", async () => {
-      const path = await invoke<string | null>("project_export_package", {id});
+    void transfer("프로젝트 내보내기 준비 중…", async () => {
+      const path = await withProgress<string | null>("project_export_package", {id});
       setStatus(path ? `내보내기 완료 · ${path}` : "");
     });
   }
@@ -150,12 +152,13 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
         </div>
       </div>
       {session.notice && <p className="home-notice" role="status">{session.notice}</p>}
-      {progress?.stage === "extracting" ? <div className="package-progress">
-        <label htmlFor="package-progress">패키지 압축 해제 <strong>{progress.percent}%</strong></label>
+      {progress?.stage === "extracting" || progress?.stage === "packing" ? <div className="package-progress">
+        <label htmlFor="package-progress">{progress.stage === "packing" ? "패키지 내보내기" : "패키지 압축 해제"} <strong>{progress.percent}%</strong></label>
         <progress id="package-progress" max={100} value={progress.percent} />
         <small>{mb(progress.writtenBytes)} / {mb(progress.totalBytes)} MB</small>
       </div> : (progress || status) && <p className="home-notice" role="status">{
         progress?.stage === "verifying" ? "압축 해제 완료 · 프로젝트 파일 확인 중…" :
+        progress?.stage === "finalizing" ? "패키지 파일 저장 중…" :
         progress?.stage === "opening" ? "프로젝트 여는 중…" : status
       }</p>}
       <section aria-labelledby="recent-heading">
