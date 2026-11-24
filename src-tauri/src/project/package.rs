@@ -213,6 +213,22 @@ pub(super) struct Package {
     pub header: Header,
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(
+    tag = "stage",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub(crate) enum ImportProgress {
+    Extracting {
+        percent: u8,
+        written_bytes: u64,
+        total_bytes: u64,
+    },
+    Verifying,
+    Opening,
+}
+
 impl Package {
     pub fn open(path: &Path) -> Result<Self, String> {
         let mut zip = ZipArchive::new(File::open(path).map_err(err)?).map_err(err)?;
@@ -236,12 +252,36 @@ impl Package {
         Ok(Self { zip, header })
     }
 
-    pub fn unpack(&mut self, parent: &Path, copy: bool) -> Result<TempDir, String> {
+    pub fn unpack(
+        &mut self,
+        parent: &Path,
+        copy: bool,
+        mut report: impl FnMut(ImportProgress),
+    ) -> Result<TempDir, String> {
         let stage = tempfile::Builder::new()
             .prefix(".cutroom-import-")
             .tempdir_in(parent)
             .map_err(err)?;
-        let mut free = fs2::available_space(parent).map_err(err)?;
+        let mut total = 0u64;
+        for i in 0..self.zip.len() {
+            let entry = self.zip.by_index_raw(i).map_err(err)?;
+            if !entry.is_dir() && entry.name() != HEADER {
+                total = total
+                    .checked_add(entry.size())
+                    .ok_or("패키지 용량을 확인할 수 없습니다.")?;
+            }
+        }
+        if total > fs2::available_space(parent).map_err(err)? {
+            return Err("가져올 폴더의 여유 공간이 부족합니다.".into());
+        }
+        let mut buffer = vec![0u8; 256 * 1024];
+        let mut written = 0u64;
+        let mut last_percent = 0;
+        report(ImportProgress::Extracting {
+            percent: 0,
+            written_bytes: 0,
+            total_bytes: total,
+        });
         let mut seen = HashSet::new();
         for i in 0..self.zip.len() {
             let mut file = self.zip.by_index(i).map_err(err)?;
@@ -268,21 +308,42 @@ impl Package {
                 continue;
             }
             let size = file.size();
-            free = free
-                .checked_sub(size)
-                .ok_or("가져올 폴더의 여유 공간이 부족합니다.")?;
             fs::create_dir_all(out.parent().unwrap()).map_err(err)?;
             let mut dest = OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(out)
                 .map_err(err)?;
-            if io::copy(&mut (&mut file).take(size.saturating_add(1)), &mut dest).map_err(err)?
-                != size
-            {
+            let mut file_bytes = 0u64;
+            loop {
+                let n = match file.read(&mut buffer) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    result => result.map_err(err)?,
+                };
+                if n == 0 {
+                    break;
+                }
+                if n as u64 > size - file_bytes {
+                    return Err(format!("패키지 파일의 크기가 일치하지 않습니다. {name}"));
+                }
+                dest.write_all(&buffer[..n]).map_err(err)?;
+                file_bytes += n as u64;
+                written += n as u64;
+                let percent = (u128::from(written) * 100 / u128::from(total)) as u8;
+                if percent != last_percent {
+                    report(ImportProgress::Extracting {
+                        percent,
+                        written_bytes: written,
+                        total_bytes: total,
+                    });
+                    last_percent = percent;
+                }
+            }
+            if file_bytes != size {
                 return Err(format!("패키지 파일의 크기가 일치하지 않습니다. {name}"));
             }
         }
+        report(ImportProgress::Verifying);
         let store = ProjectStore::at(parent.into(), stage.path().into(), Uuid::new_v4());
         let project = store.load()?;
         if project.title != self.header.title {

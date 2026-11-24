@@ -31,6 +31,10 @@
 .home-folder::before { content: ""; position: absolute; width: 12px; height: 4px; left: -1.5px; top: -5px; border: 1.5px solid #a1b098; border-bottom: 0; border-radius: 3px 4px 0 0; }
 .home-notice, .home-error { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .home-error { color: #ffc2aa; }
+.package-progress { display: grid; gap: 5px; margin: 0 0 18px; font-size: 14px; }
+.package-progress label { display: flex; justify-content: space-between; }
+.package-progress progress { width: 100%; height: 10px; accent-color: var(--accent); }
+.package-progress small { color: var(--muted); font-variant-numeric: tabular-nums; }
 .new-project { width: min(390px, 92vw); padding: 24px; color: inherit; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
 .new-project::backdrop { background: rgb(0 0 0 / 60%); }
 .new-project h2 { margin: 0 0 20px; font-size: 19px; }

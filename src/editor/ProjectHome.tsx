@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
+import { Channel } from "@tauri-apps/api/core";
 import { invoke, type EditorSeek, type ProjectSession } from "./projectSession";
 import { useCutroomEvent } from "./useCutroomEvent";
 import "./ProjectHome.css";
 
 type RecentProject = { id: string; title: string | null; path: string };
+type ImportProgress = {stage: "extracting"; percent: number; writtenBytes: number; totalBytes: number}
+  | {stage: "verifying" | "opening"};
+const mb = (bytes: number) => (bytes / 1_000_000).toLocaleString("ko-KR", {maximumFractionDigits: 1});
 type PackagePreview = {
   path: string; header: {version: number; id: string; title: string; editedMs: number};
   existing: {id: string; path: string; editedMs: number} | null;
@@ -26,6 +30,7 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
   const conflict = useRef<HTMLDialogElement>(null);
   const [incoming, setIncoming] = useState<PackagePreview | null>(null);
   const [status, setStatus] = useState("");
+  const [progress, setProgress] = useState<ImportProgress | null>(null);
 
   useEffect(() => {
     if (incoming) conflict.current?.showModal();
@@ -45,9 +50,20 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
 
   async function importPackage(preview: PackagePreview, mode: "new" | "replace" | "copy") {
     setIncoming(null);
-    setStatus("프로젝트 패키지를 가져오는 중…");
-    if (await invoke<boolean>("project_import_package", {preview, mode})) window.location.replace("?view=editor");
-    else setStatus("");
+    setStatus("프로젝트 가져오기 준비 중…");
+    let active = true;
+    const channel = new Channel<ImportProgress>(update => {
+      if (active) setProgress(update);
+    });
+    try {
+      if (await invoke<boolean>("project_import_package", {preview, mode, progress: channel})) {
+        window.location.replace("?view=editor");
+      }
+    } finally {
+      active = false;
+      setProgress(null);
+      setStatus("");
+    }
   }
 
   function pickPackage() {
@@ -134,7 +150,14 @@ export function ProjectHome({session, resume}: {session: ProjectSession; resume:
         </div>
       </div>
       {session.notice && <p className="home-notice" role="status">{session.notice}</p>}
-      {status && <p className="home-notice" role="status">{status}</p>}
+      {progress?.stage === "extracting" ? <div className="package-progress">
+        <label htmlFor="package-progress">패키지 압축 해제 <strong>{progress.percent}%</strong></label>
+        <progress id="package-progress" max={100} value={progress.percent} />
+        <small>{mb(progress.writtenBytes)} / {mb(progress.totalBytes)} MB</small>
+      </div> : (progress || status) && <p className="home-notice" role="status">{
+        progress?.stage === "verifying" ? "압축 해제 완료 · 프로젝트 파일 확인 중…" :
+        progress?.stage === "opening" ? "프로젝트 여는 중…" : status
+      }</p>}
       <section aria-labelledby="recent-heading">
         <div className="home-recent-header"><h2 id="recent-heading">최근 프로젝트</h2>
           <button className="text-button" disabled={working} onClick={() => void open({type:"browse"})}>기존 폴더 열기</button>

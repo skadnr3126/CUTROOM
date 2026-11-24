@@ -164,7 +164,7 @@ mod tests {
         let old = existing(&library, &archive.header).unwrap().unwrap();
         assert_eq!(old.id, source.id);
         let original = fs::read(source.directory().join("project.json")).unwrap();
-        let stage = archive.unpack(tmp.path(), false).unwrap();
+        let stage = archive.unpack(tmp.path(), false, |_| {}).unwrap();
         let path = package::publish(stage, tmp.path(), "편집본").unwrap();
         let imported = library
             .activate_replacing(path.clone(), source.session, None, Some(old.id), |_| Ok(()))
@@ -189,6 +189,7 @@ pub(crate) async fn project_import_package(
     store: ProjectStore,
     preview: Preview,
     mode: Mode,
+    progress: tauri::ipc::Channel<package::ImportProgress>,
 ) -> Result<bool, String> {
     run_io(move || {
         let library = app.state::<Library>();
@@ -226,7 +227,9 @@ pub(crate) async fn project_import_package(
                 return Err("기존 프로젝트 폴더 밖의 위치를 선택해 주세요.".into());
             }
         }
-        let stage = archive.unpack(&parent, mode == Mode::Copy)?;
+        let stage = archive.unpack(&parent, mode == Mode::Copy, |event| {
+            let _ = progress.send(event);
+        })?;
         let _lock = if let Some(old) = replacing {
             Some(library.by_id(old.id)?.lock_project()?)
         } else {
@@ -235,6 +238,7 @@ pub(crate) async fn project_import_package(
         if existing(&library, &archive.header)? != preview.existing {
             return Err("가져오는 동안 기존 프로젝트가 변경되었습니다. 다시 선택해 주세요.".into());
         }
+        let _ = progress.send(package::ImportProgress::Opening);
         let path = package::publish(stage, &parent, &archive.header.title)?;
         library
             .activate_replacing(
