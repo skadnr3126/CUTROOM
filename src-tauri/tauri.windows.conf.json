@@ -1,9 +1,9 @@
 {
   "build": {
-    "beforeBuildCommand": "npm run build && node integrations/cutroom-mcp/build.mjs"
+    "beforeBuildCommand": "npm run build && node integrations/cutroom-mcp/build.mjs && node integrations/ffmpeg/build.mjs"
   },
   "bundle": {
-    "resources": { "../integrations/cutroom-mcp/bundle/": "mcp/" },
+    "resources": { "../integrations/cutroom-mcp/bundle/": "mcp/", "../integrations/ffmpeg/bundle/": "media-tools/" },
     "windows": {
       "nsis": { "installMode": "currentUser", "languages": ["Korean", "English"], "installerHooks": "installer/codex.nsh" },
       "wix": { "language": "ko-KR", "fragmentPaths": ["installer/codex.wxs"], "componentGroupRefs": ["CutroomMcpRegistration"] }

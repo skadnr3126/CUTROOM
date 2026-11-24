@@ -35,7 +35,7 @@ npm.cmd install
 npm.cmd run tauri dev
 ```
 
-MP4 출력과 미디어 길이 확인에는 `ffmpeg.exe`와 `ffprobe.exe`를 사용합니다. 컷룸은 `%LOCALAPPDATA%\com.namuk.tauri-app\tools`와 PATH에서 두 도구를 찾습니다. Windows에서 사용한 빌드는 [Gyan FFmpeg Essentials](https://www.gyan.dev/ffmpeg/builds/)입니다.
+Windows x64 설치판에는 썸네일·자막·녹화·MP4 출력용 `ffmpeg.exe`와 재생 시간·오디오 확인용 `ffprobe.exe`가 포함됩니다. 컷룸은 설치 폴더의 `media-tools`를 먼저 확인하고, 개발 환경에서는 `%LOCALAPPDATA%\com.namuk.tauri-app\tools`와 PATH도 확인합니다. 프로젝트를 열 때 보관함 영상·오디오의 누락된 재생 시간을 확인해 저장합니다. [Gyan FFmpeg Essentials](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2)
 
 ## 편집
 

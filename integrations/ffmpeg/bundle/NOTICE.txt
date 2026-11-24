@@ -1,0 +1,5 @@
+Cutroom uses unmodified FFmpeg and FFprobe 9.0.2 as separate executables.
+Windows x64 Essentials build by Gyan Doshi, licensed under GPL v3.
+Binary archive and release information: https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2
+Corresponding FFmpeg source: https://github.com/FFmpeg/FFmpeg/tree/946fcce07b
+See LICENSE and README.txt in this directory for the license and build details.

@@ -156,7 +156,7 @@ fn inspect(path: &Path, kind: Kind, probe: Option<&Path>) -> Result<(Option<u64>
             "-v",
             "error",
             "-show_entries",
-            "format=duration:stream=codec_type",
+            "format=duration:stream=codec_type,duration",
             "-of",
             "json",
         ])
@@ -173,17 +173,36 @@ fn inspect(path: &Path, kind: Kind, probe: Option<&Path>) -> Result<(Option<u64>
     if (kind == Kind::Audio && !audio) || (kind != Kind::Audio && !visual) {
         return Err(());
     }
-    let duration_ms = data["format"]["duration"]
-        .as_str()
-        .and_then(|duration| duration.parse::<f64>().ok())
-        .filter(|duration| duration.is_finite() && *duration > 0.0)
-        .filter(|_| kind != Kind::Image)
-        .map(|duration| (duration * 1_000.0).ceil() as u64);
+    let milliseconds = |v: &Value| {
+        v.as_str()?
+            .parse::<f64>()
+            .ok()
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .map(|s| (s * 1_000.0).ceil() as u64)
+    };
+    let duration_ms = if kind == Kind::Image {
+        None
+    } else {
+        milliseconds(&data["format"]["duration"]).or_else(|| {
+            streams
+                .iter()
+                .filter_map(|s| milliseconds(&s["duration"]))
+                .max()
+        })
+    };
     Ok((duration_ms, audio))
 }
 
 pub(super) fn find_tool(app_data: &Path, tool: &str) -> Option<PathBuf> {
     let filename = format!("{tool}{}", env::consts::EXE_SUFFIX);
+    #[cfg(windows)]
+    if let Some(installed) = env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("media-tools").join(&filename)))
+        .filter(|path| path.is_file())
+    {
+        return Some(installed);
+    }
     let local = app_data.join("tools").join(&filename);
     if local.is_file() {
         return Some(local);

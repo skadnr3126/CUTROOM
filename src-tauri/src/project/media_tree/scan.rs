@@ -90,7 +90,11 @@ fn walk(root: &Path, rel: &str, inventory: &mut Inventory) -> Result<(), String>
     Ok(())
 }
 
-pub(super) fn reconcile(store: &ProjectStore, p: &mut Project) -> Result<bool, String> {
+pub(super) fn reconcile(
+    store: &ProjectStore,
+    p: &mut Project,
+    repair_durations: bool,
+) -> Result<bool, String> {
     let mut inventory = Inventory {
         folders: vec![],
         files: vec![],
@@ -187,6 +191,20 @@ pub(super) fn reconcile(store: &ProjectStore, p: &mut Project) -> Result<bool, S
                 && a.folder_id == folder
                 && !a.missing
             {
+                if repair_durations
+                    && a.kind != Kind::Image
+                    && a.duration_ms.is_none()
+                    && probe.is_some()
+                {
+                    if let Some(fresh) =
+                        inspect_complete(&root.join(&rel), leaf, &disk, probe.as_deref())
+                        && fresh.duration_ms.is_some()
+                    {
+                        a.duration_ms = fresh.duration_ms;
+                        a.has_audio = fresh.has_audio;
+                        changed = true;
+                    }
+                }
                 continue;
             }
             let ext = Path::new(leaf)
@@ -202,10 +220,23 @@ pub(super) fn reconcile(store: &ProjectStore, p: &mut Project) -> Result<bool, S
                 else {
                     continue;
                 };
+                // A synced copy can acquire a new disk ID and millisecond timestamps.
+                // Prefer measured metadata. An unavailable probe supplies no new evidence.
+                let copied = a.project_file.as_deref() == Some(&rel)
+                    && a.extension == ext
+                    && a.disk.as_ref().is_some_and(|old| {
+                        old.key != disk.key
+                            && old.size == disk.size
+                            && old.modified / 1_000_000 == disk.modified / 1_000_000
+                    });
                 a.extension = fresh.extension;
                 a.kind = fresh.kind;
-                a.duration_ms = fresh.duration_ms;
-                a.has_audio = fresh.has_audio;
+                if fresh.duration_ms.is_some() || !copied {
+                    a.duration_ms = fresh.duration_ms;
+                }
+                if probe.is_some() || !copied {
+                    a.has_audio = fresh.has_audio;
+                }
             }
             if a.project_file.as_deref().and_then(|s| s.rsplit('/').next()) != Some(leaf) {
                 a.name = leaf.into();

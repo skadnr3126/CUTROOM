@@ -4,6 +4,71 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::json;
 
 #[test]
+#[ignore = "Requires CUTROOM_TEST_TOOLS with FFmpeg and FFprobe"]
+fn reopening_repairs_persisted_duration_and_keeps_the_source_id() {
+    use std::env;
+    let tmp = tempfile::tempdir().unwrap();
+    let store = ProjectStore::new(tmp.path().to_owned());
+    let tools = PathBuf::from(env::var_os("CUTROOM_TEST_TOOLS").unwrap());
+    // Installed-package QA also runs this test next to the installed Cutroom executable.
+    let packaged = env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("media-tools");
+    if !packaged.is_dir() {
+        let local = tmp.path().join("tools");
+        fs::create_dir(&local).unwrap();
+        for name in ["ffmpeg", "ffprobe"] {
+            let exe = format!("{name}{}", env::consts::EXE_SUFFIX);
+            fs::hard_link(tools.join(&exe), local.join(&exe))
+                .or_else(|_| fs::copy(tools.join(&exe), local.join(&exe)).map(|_| ()))
+                .unwrap();
+        }
+    }
+    store.sync_media().unwrap();
+    let path = store.media_dir().join("오디오가 있는 영상.mp4");
+    let ffmpeg = files::find_tool(tmp.path(), "ffmpeg").unwrap();
+    let encoded = files::media_command(&ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=s=64x48:r=10:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=duration=1",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+        ])
+        .arg(path)
+        .status()
+        .unwrap();
+    assert!(encoded.success());
+    let (initial, _) = store.sync_media().unwrap();
+    let id = initial.assets[0].id;
+    assert_eq!(initial.assets[0].duration_ms, Some(1000));
+    store
+        .commit(|p, _, _| {
+            p.assets[0].duration_ms = None;
+            p.assets[0].has_audio = false;
+            Ok(())
+        })
+        .unwrap();
+    assert!(!store.sync_media().unwrap().1);
+    let (repaired, changed) = store.reconcile_media(true).unwrap();
+    assert!(changed);
+    assert_eq!(repaired.asset(id).unwrap().duration_ms, Some(1000));
+    assert!(repaired.asset(id).unwrap().has_audio);
+    assert!(!store.reconcile_media(true).unwrap().1);
+}
+
+#[test]
 fn migration_and_external_moves_preserve_scene_source_and_missing_state() {
     let tmp = tempfile::tempdir().unwrap();
     let store = ProjectStore::new(tmp.path().to_owned());

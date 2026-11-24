@@ -323,6 +323,13 @@ pub(super) fn materialize(
 
 impl ProjectStore {
     pub(super) fn sync_media(&self) -> Result<(Project, bool), String> {
+        self.reconcile_media(false)
+    }
+
+    pub(super) fn reconcile_media(
+        &self,
+        repair_durations: bool,
+    ) -> Result<(Project, bool), String> {
         let _lock = self.lock_project()?;
         let mut p = self.load()?;
         let root = self.directory();
@@ -335,7 +342,7 @@ impl ProjectStore {
                 let before = Layout::capture(&p)?;
                 materialize(&root, &mut p, &before, &mut j, true)?;
             }
-            let changed = scan::reconcile(self, &mut p)? || migrating;
+            let changed = scan::reconcile(self, &mut p, repair_durations)? || migrating;
             if changed {
                 if let Some(marker) = j.marker() {
                     p.media_transaction = Some(marker);

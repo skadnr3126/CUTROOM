@@ -518,7 +518,7 @@ fn save(directory: &Path, project: &Project) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn project_load(store: ProjectStore) -> Result<ProjectView, String> {
-    run_io(move || Ok(store.view(store.sync_media()?.0))).await
+    run_io(move || Ok(store.view(store.reconcile_media(true)?.0))).await
 }
 
 #[tauri::command]
