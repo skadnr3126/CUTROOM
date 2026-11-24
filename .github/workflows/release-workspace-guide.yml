@@ -1,0 +1,26 @@
+name: Attach Codex workspace instructions
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Upload instructions for this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          file=integrations/codex-workspace/AGENTS.md
+          digest=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.assets[] | select(.name == "AGENTS.md") | .digest')
+          if [ -z "$digest" ]; then
+            gh release upload "$RELEASE_TAG" "$file"
+          else
+            test "$digest" = "sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+          fi

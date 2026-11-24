@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -32,6 +32,14 @@ async function request(command) {
   });
 }
 const server = new McpServer({ name: "cutroom", version: "0.1.0" });
+server.registerTool("workspace_guide", {
+  description: "Read the editing workflow shipped with this Cutroom MCP server, including captions, media and portable projects.",
+  inputSchema: {},
+  annotations: { readOnlyHint: true }
+}, async () => {
+  const guide = await readFile(join(dirname(process.argv[1]), "WORKFLOW.md"), "utf8");
+  return { content: [{ type: "text", text: guide }] };
+});
 const sceneId = z.string().uuid().describe("ID from timeline");
 const expected = z.number().int().nonnegative().describe("Current scene revision");
 const atMs = z.number().int().nonnegative().describe("Time in milliseconds from scene start");

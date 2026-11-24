@@ -45,4 +45,7 @@ if (process.platform === "win32") {
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+  await copyFile(join(root, "WORKFLOW.md"), join(output, "WORKFLOW.md"));
+  await copyFile(join(root, "../codex-workspace/AGENTS.md"), join(output, "AGENTS.md"));
+  execFileSync(process.execPath, [join(root, "verify-guide.mjs")], { stdio: "inherit" });
 }
