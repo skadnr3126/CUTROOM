@@ -5,6 +5,11 @@
 .home-title { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center; margin-bottom: 44px; }
 .home-title h1 { margin: 0; font-size: clamp(30px, 4vw, 44px); letter-spacing: -.06em; line-height: 1.2; }
 .home-actions, .new-project footer { display: flex; gap: 8px; }
+.home-actions, .new-project footer { flex-wrap: wrap; }
+@media (max-width: 680px) {
+  .home-projects li { flex-wrap: wrap; justify-content: flex-end; }
+  .home-projects .home-project { flex-basis: 100%; }
+}
 .home-actions .button, .new-project .button { min-height: 37px; padding-inline: 14px; }
 .home-content h2 { margin: 0 0 13px; font-size: 14px; font-weight: 600; color: var(--muted); }
 .home-recent-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }

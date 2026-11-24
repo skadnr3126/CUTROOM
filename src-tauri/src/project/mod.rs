@@ -22,6 +22,7 @@ pub(crate) mod library;
 pub(crate) mod media_drop;
 pub(crate) mod media_tree;
 mod model;
+mod package;
 mod render;
 mod scene_tools;
 mod source_work;

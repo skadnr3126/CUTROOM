@@ -21,7 +21,7 @@ pub(crate) struct DiskStamp {
     modified: u128,
 }
 
-fn linked(meta: &fs::Metadata) -> bool {
+pub(super) fn linked(meta: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;

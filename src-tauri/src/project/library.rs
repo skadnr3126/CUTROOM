@@ -32,6 +32,7 @@ struct OpenProjects {
 
 #[cfg(test)]
 mod tests;
+pub(crate) mod transfer;
 
 pub(crate) struct Library {
     data: PathBuf,
@@ -136,6 +137,17 @@ impl Library {
         name: Option<&str>,
         grant: impl FnOnce(&Path) -> Result<(), String>,
     ) -> Result<ProjectStore, String> {
+        self.activate_replacing(path, expected, name, None, grant)
+    }
+
+    fn activate_replacing(
+        &self,
+        path: PathBuf,
+        expected: Uuid,
+        name: Option<&str>,
+        previous: Option<Uuid>,
+        grant: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<ProjectStore, String> {
         let mut state = self
             .inner
             .lock()
@@ -170,6 +182,13 @@ impl Library {
         store.load()?;
         grant(&store.media_dir())?;
         let mut recent = state.recent.clone();
+        if let Some(id) = previous {
+            let old = recent
+                .iter_mut()
+                .find(|e| e.id == id && !e.hidden)
+                .ok_or("기존 프로젝트 목록이 바뀌었습니다. 다시 가져와 주세요.")?;
+            old.hidden = true;
+        }
         recent.retain(|e| e.id != entry.id);
         recent.insert(0, entry);
         atomic_json(&self.data.join("recent-projects.json"), &recent)?;
@@ -274,6 +293,7 @@ pub(crate) async fn project_save_draft(store: ProjectStore, draft: Value) -> Res
         if store.directory() == store.app_data.join("project") {
             fs::create_dir_all(store.directory()).map_err(|e| e.to_string())?;
         }
+        let _lock = store.lock_project()?;
         atomic_json(&store.directory().join("script-draft.json"), &draft)
     })
     .await
