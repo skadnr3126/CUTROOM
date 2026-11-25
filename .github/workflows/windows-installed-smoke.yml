@@ -1,0 +1,39 @@
+name: Windows installed release smoke test
+on:
+  push:
+    branches: [qa/windows-release-017-0fca7b]
+permissions:
+  contents: read
+jobs:
+  fresh-install:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download and install the published Windows release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'Cutroom Release'
+          $setup = Join-Path $env:RUNNER_TEMP 'Cutroom-setup.exe'
+          if ((Test-Path "$env:LOCALAPPDATA/com.namuk.tauri-app") -or (Test-Path "$env:USERPROFILE/.codex/config.toml") -or (Test-Path $dir)) { throw 'Unexpected preexisting Cutroom or Codex state' }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version
+          curl.exe -fsSL --retry 2 'https://github.com/skadnr3126/CUTROOM/releases/download/v0.1.7/Cutroom-0.1.7-windows-x64-setup.exe' -o $setup
+          if ($LASTEXITCODE -or (Get-FileHash $setup).Hash -ne '0b6135357cac090aadcfd95354df6db57c755e225e3a1b7fbe1c53ee3eb06c12') {throw 'Download integrity check failed'}
+          $proc = Start-Process $setup -ArgumentList "/S /NS /D=$dir" -PassThru -Wait -WindowStyle Hidden
+          if ($proc.ExitCode -ne 0 -or !(Test-Path "$dir/tauri-app.exe")) {throw 'Installation failed'}
+          if (!(Test-Path "$env:USERPROFILE/.codex/config.toml")) {throw 'No automatic MCP registration'}
+          Write-Output 'PASS public download, SHA-256, first install and automatic registration'
+      - name: Install the real Codex client and UI test drivers
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/codex-test" @openai/codex@0.172.0 --no-audit --no-fund
+          if ($LASTEXITCODE) {exit $LASTEXITCODE}
+          python -m pip -q install pywinauto==0.6.9 websocket-client==1.8.0
+      - name: Open the sample from Home and query the running editor through Codex
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = '1'
+          python -u .github/smoke/installed.py
