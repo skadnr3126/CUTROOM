@@ -5,6 +5,7 @@ use std::{
 };
 
 use tempfile::{NamedTempFile, tempdir};
+mod bgm_mix;
 
 use super::{
     composition_layout::{self, CaptionChange, Layout, VisualKeyframe},
@@ -47,6 +48,24 @@ pub(super) fn export_styled(
     destination: &Path,
     styles: &[SceneStyle],
 ) -> Result<(), String> {
+    export_range(
+        ffmpeg,
+        media,
+        project,
+        destination,
+        styles,
+        0..project.scenes.len(),
+    )
+}
+
+pub(super) fn export_range(
+    ffmpeg: &Path,
+    media: &Path,
+    project: &Project,
+    destination: &Path,
+    styles: &[SceneStyle],
+    range: std::ops::Range<usize>,
+) -> Result<(), String> {
     if project.scenes.is_empty() {
         return Err("내보낼 대본 구간을 추가해 주세요.".to_owned());
     }
@@ -56,7 +75,14 @@ pub(super) fn export_styled(
         .map(|font| fs::copy(font, work.join("caption.ttf")).is_ok())
         .unwrap_or(false);
     let mut concat = String::new();
-    for (index, scene) in project.scenes.iter().enumerate() {
+    let start_ms: u64 = project.scenes[..range.start]
+        .iter()
+        .map(|s| s.settings.duration_ms)
+        .sum();
+    let mut end_ms = start_ms;
+    for index in range {
+        let scene = &project.scenes[index];
+        end_ms += scene.settings.duration_ms;
         project.validate_settings(&scene.settings)?;
         let mut elapsed_ms = 0;
         if let Some(track) = &scene.settings.caption_ass {
@@ -78,39 +104,47 @@ pub(super) fn export_styled(
             .map_err(|error| format!("구간 {}을 렌더링할 수 없습니다. {error}", index + 1))?;
             elapsed_ms += settings.duration_ms;
             concat.push_str(&format!("file '{file}'\n"));
+            if !project.bgm.is_empty() {
+                // Anchor the next piece to the editor clock, including when AAC or
+                // video frame boundaries rounded the intermediate MP4 duration.
+                concat.push_str(&format!("duration {}\n", seconds(settings.duration_ms)));
+            }
         }
     }
     fs::write(work.join("segments.txt"), concat)
         .map_err(|_| "렌더링 구간을 정리할 수 없습니다.")?;
-    join_segments(ffmpeg, work, destination)
+    join_segments(ffmpeg, work, destination, |cmd| {
+        bgm_mix::configure(cmd, media, project, start_ms..end_ms)
+    })
 }
 
-fn join_segments(ffmpeg: &Path, work: &Path, destination: &Path) -> Result<(), String> {
+fn join_segments(
+    ffmpeg: &Path,
+    work: &Path,
+    destination: &Path,
+    audio: impl FnOnce(&mut Command) -> Result<(), String>,
+) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("내보내기 경로를 확인해 주세요.")?;
     let result =
         NamedTempFile::new_in(parent).map_err(|_| "선택한 위치에 영상을 저장할 수 없습니다.")?;
-    run(media_command(ffmpeg)
-        .current_dir(work)
-        .args([
-            "-nostdin",
-            "-y",
-            "-v",
-            "error",
-            "-f",
-            "concat",
-            "-safe",
-            "1",
-            "-i",
-            "segments.txt",
-            "-c",
-            "copy",
-            "-movflags",
-            "+faststart",
-            "-f",
-            "mp4",
-        ])
+    let mut cmd = media_command(ffmpeg);
+    cmd.current_dir(work).args([
+        "-nostdin",
+        "-y",
+        "-v",
+        "error",
+        "-f",
+        "concat",
+        "-safe",
+        "1",
+        "-i",
+        "segments.txt",
+    ]);
+    audio(&mut cmd)?;
+    run(cmd
+        .args(["-movflags", "+faststart", "-f", "mp4"])
         .arg(result.path()))?;
     result
         .as_file()
@@ -148,12 +182,16 @@ fn join_segments_preserves_existing_files_and_cleans_up_failed_exports() {
     .unwrap();
     let manifest = work.path().join("segments.txt");
     fs::write(&manifest, "file 'part.mp4'\n").unwrap();
-    let error = join_segments(&ffmpeg, work.path(), &destination).unwrap_err();
+    let copy = |cmd: &mut Command| {
+        cmd.args(["-c", "copy"]);
+        Ok(())
+    };
+    let error = join_segments(&ffmpeg, work.path(), &destination, copy).unwrap_err();
     assert!(error.contains("같은 이름의 파일"));
     assert_eq!(fs::read(&destination).unwrap(), b"existing file");
 
     fs::write(manifest, "file 'missing.mp4'\n").unwrap();
-    assert!(join_segments(&ffmpeg, work.path(), &folder.path().join("new.mp4")).is_err());
+    assert!(join_segments(&ffmpeg, work.path(), &folder.path().join("new.mp4"), copy).is_err());
     assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
 }
 

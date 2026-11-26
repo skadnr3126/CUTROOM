@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Listener};
 use uuid::Uuid;
+use super::bgm;
 
 #[derive(Deserialize)]
 #[serde(
@@ -15,6 +16,16 @@ use uuid::Uuid;
 )]
 pub(crate) enum Command {
     Timeline,
+    ListBgm,
+    SetBgm {
+        project_id: Uuid,
+        clip: bgm::Clip,
+        expected: Option<bgm::Clip>,
+    },
+    DeleteBgm {
+        project_id: Uuid,
+        expected: bgm::Clip,
+    },
     GetSelection,
     GetAsset {
         asset_id: Uuid,
@@ -109,11 +120,20 @@ pub(crate) fn execute(
     store: &ProjectStore,
     command: Command,
 ) -> Result<Value, String> {
-    let (mut project, changed) = store.sync_media()?;
+    let (project, changed) = store.sync_media()?;
     if changed {
         let _ = app.emit("cutroom-project-changed", ());
     }
     let (edited, focus) = match command {
+        Command::ListBgm => return Ok(bgm::inventory(&project, store.id)),
+        Command::SetBgm { project_id, clip, expected } => {
+            let view = bgm::save_clip(store, &project, project_id, expected.as_ref(), Some(clip))?;
+            (Some(view), None)
+        }
+        Command::DeleteBgm { project_id, expected } => {
+            let view = bgm::save_clip(store, &project, project_id, Some(&expected), None)?;
+            (Some(view), None)
+        }
         Command::GetSelection => return selection(app, store),
         Command::GetAsset { asset_id } => {
             let asset = project.asset(asset_id)?;
@@ -323,10 +343,9 @@ pub(crate) fn execute(
             {
                 return Err("새 MP4 파일의 절대 경로를 지정하세요.".into());
             }
-            project.scenes.retain(|s| s.id == scene_id);
             let ff =
                 files::find_tool(&store.app_data, "ffmpeg").ok_or("FFmpeg를 찾을 수 없습니다.")?;
-            render::export(&ff, &store.media_dir(), &project, &path)?;
+            render::export_range(&ff, &store.media_dir(), &project, &path, &[], index..index + 1)?;
             return Ok(json!({"path":path,"revision":expected}));
         }
     };

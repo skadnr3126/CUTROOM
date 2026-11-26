@@ -6,6 +6,8 @@ pub(super) const MIN_DURATION_MS: u64 = 100;
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Project {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bgm: Vec<super::bgm::Clip>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub media_tree: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -30,6 +32,7 @@ pub(crate) struct Project {
 impl Default for Project {
     fn default() -> Self {
         Self {
+            bgm: Vec::new(),
             media_tree: false,
             media_transaction: None,
             folders: Vec::new(),

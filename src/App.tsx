@@ -291,6 +291,7 @@ function Editor({session, initialSeek}: {session:ProjectSession; initialSeek?:Ed
       <EditorLayout>
         <Stage initialSeek={initialSeek} folderControls={{ folders, active: activeFolder, open: setFolderView, edit: async action => !!await edit(action),
           importFiles: (files, id) => void importToBin(files, id) }} recordingTrack={recordingTrack} project={project} mediaDir={view?.mediaDir ?? ""} scene={scene} selectionVersion={selectionVersion} source={source} mode={mode} onMode={setMode}
+          onBgmChange={clips => { void edit({type:"setBgm", expected:project.bgm ?? [], clips}); }}
           captureControls={<CaptureControls onActivity={setCaptureBusy} onPreview={setRecordingTrack} busy={busy} ffmpegAvailable={!!view?.exportAvailable} onSave={id => saveRecording(id, activeFolder)}
             onCapture={() => void captureRegion(activeFolder).then(id => { if (id) chooseSource(id); })} />}
           onChooseScene={(id) => { chooseScene(id, false); setTimelineJump({ sceneId: id }); }} onChooseSource={chooseSource} busy={busy}

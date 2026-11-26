@@ -7,6 +7,10 @@ const LIMIT: usize = 100;
 const CONFLICT: &str = "타임라인이 변경되어 이 작업을 되돌릴 수 없습니다.";
 
 pub(super) enum Inverse {
+    Bgm {
+        before: Vec<super::bgm::Clip>,
+        after: Vec<super::bgm::Clip>,
+    },
     Guidelines {
         previous_selection: Option<Uuid>,
         before: Vec<super::guidelines::Style>,
@@ -52,7 +56,7 @@ pub(super) struct History(VecDeque<(UndoTarget, Inverse)>);
 impl Inverse {
     fn scene_id(&self) -> Option<Uuid> {
         match self {
-            Inverse::Guidelines { .. } => None,
+            Inverse::Guidelines { .. } | Inverse::Bgm { .. } => None,
             Inverse::Group(entries) => entries.iter().find_map(Inverse::scene_id),
             Inverse::Settings { id, .. }
             | Inverse::Move { id, .. }
@@ -94,6 +98,12 @@ impl History {
 
     fn apply_inverse(inverse: &Inverse, project: &mut Project) -> Result<(), String> {
         match inverse {
+            Inverse::Bgm { before, after } => {
+                if project.bgm != *after {
+                    return Err(CONFLICT.into());
+                }
+                project.bgm.clone_from(before);
+            }
             Inverse::Guidelines {
                 before,
                 after,

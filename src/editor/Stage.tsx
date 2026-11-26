@@ -20,6 +20,8 @@ import { SourceBin } from "./SourceBin";
 import { StageLayout } from "./EditorLayout";
 import type { SceneRename } from "./SceneTitleInput";
 import { TimelineOverview } from "./TimelineOverview";
+import { anchorTime } from "./bgm";
+import type { BgmClip, BgmSourceRange } from "./project";
 import { TimelineRuler } from "./TimelineRuler";
 import { useTimelineZoom } from "./useTimelineZoom";
 import { ClipMenu, type MenuAction } from "./ClipMenu";
@@ -33,6 +35,7 @@ type Track = MediaTrack | "captions";
 
 
 type Props = {
+  onBgmChange: (clips: BgmClip[]) => void;
   initialSeek?: EditorSeek;
   folderControls: FolderControls;
   recordingTrack: MediaStreamTrack | null;
@@ -62,7 +65,7 @@ type Props = {
   busy: boolean;
 };
 
-export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool, onVisualChange, onCutRange, captureControls, project, mediaDir, scene, selectionVersion, source, mode, onMode, onChooseScene, onChooseSource, onImport, onLink, onChangePlacement, onSaveClip, onRenameSource, onRelinkSource, onRemoveSource, onRemoveScene, onMoveScene, sceneRename, busy }: Props) {
+export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool, onVisualChange, onCutRange, captureControls, project, onBgmChange, mediaDir, scene, selectionVersion, source, mode, onMode, onChooseScene, onChooseSource, onImport, onLink, onChangePlacement, onSaveClip, onRenameSource, onRelinkSource, onRemoveSource, onRemoveScene, onMoveScene, sceneRename, busy }: Props) {
   const [watchRecording, setWatchRecording] = useState(true);
   useEffect(() => { setWatchRecording(true); }, [recordingTrack]);
   const liveTrack = watchRecording ? recordingTrack : null;
@@ -222,6 +225,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   }, [playbackEnd, mode, playing]);
 
   const time = Math.max(playbackStart, Math.min(position, playbackEnd));
+  const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({clip, start:anchorTime(clip.start,sections), end:anchorTime(clip.end,sections)})), [project.bgm,sections]);
   const visibleSpans = scope === "detail" ? detail : spans;
   const current = visibleSpans.find((span) => time < span.end) ?? visibleSpans[visibleSpans.length - 1];
   const currentScene = current?.scene;
@@ -391,6 +395,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   !hasPictureAbove && <div className="picture-empty"><span aria-hidden="true">▷</span>{range ? "이 위치에는 영상 클립이 없습니다" : current ? "이 구간에 영상 소스를 넣어 보세요" : "대본을 추가하고 편집을 시작하세요"}</div>
                 )}
                 </div>
+                {bgmRanges.map(({clip,start,end}) => {
+                  const asset = byId.get(clip.assetId);
+                  if (!asset || time < start || time >= end) return null;
+                  const fadeIn = clip.fadeInMs ? Math.min(1,(time-start)/Math.min(end-start,clip.fadeInMs)) : 1;
+                  const fadeOut = clip.fadeOutMs ? Math.min(1,(end-time)/Math.min(end-start,clip.fadeOutMs)) : 1;
+                  return <SyncedClip key={clip.id+":"+asset.id} kind="audio" url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
+                    playing={playing} volume={clip.volume/100*fadeIn*fadeOut}/>;
+                })}
                 {audio && <SyncedClip key={`${current?.owner.id}:${audio.id}`} kind="audio" url={sourceUrl(mediaDir, audio)}
                   time={(localTime + (current ? current.start - current.sectionStart : 0) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} />}
                 {current && (current.owner.overlays ?? []).map(layer => {
@@ -502,6 +514,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
           </div>
         </header>
         {scope === "all" ? <TimelineOverview sections={sections} assets={byId} mediaDir={mediaDir} selectedId={scene?.id}
+          bgm={project.bgm ?? []} onBgmChange={clips => {setWatchRecording(false); onMode("timeline"); onBgmChange(clips);}}
           pixelsPerMs={pixelsPerMs} viewport={viewport} scrollRef={scrollRef} onSeek={scrubSection}
           time={time} playing={playing} busy={busy} dragAsset={dragAsset} select={selectOverview} onImport={onImport}
           onOpenDetail={(id, at) => { selectOverview(id, at); setScope("detail"); }}
@@ -598,15 +611,20 @@ function SourcePreview({ asset, mediaDir }: { asset: Asset; mediaDir: string }) 
   );
 }
 
-function SyncedClip({ kind, url, time, playing, muted, onDuration }: { kind: "video" | "audio"; url: string; time: number; playing: boolean; muted?: boolean; onDuration?: (ms: number) => void }) {
+function SyncedClip({ kind, url, time, playing, muted, onDuration, loop=false, volume=1, sourceRange }: { kind: "video" | "audio"; url: string; time: number; playing: boolean; muted?: boolean; onDuration?: (ms: number) => void; loop?: boolean; volume?: number; sourceRange?: BgmSourceRange | null }) {
   const ref = useRef<HTMLMediaElement | null>(null);
   const [failed, setFailed] = useState(false);
   function sync(element: HTMLMediaElement) {
     if (!element.readyState) return;
     const hasDuration = Number.isFinite(element.duration);
-    const target = hasDuration ? Math.min(time, Math.max(0, element.duration - 0.04)) : time;
-    const active = playing && (!hasDuration || time < element.duration - 0.04);
-    if (Math.abs(element.currentTime - target) > (active ? 0.28 : 0.035)) element.currentTime = target;
+    element.volume = volume;
+    const loopStart = sourceRange ? sourceRange.inMs/1000 : 0;
+    const loopEnd = sourceRange ? Math.min(element.duration, sourceRange.outMs/1000) : element.duration;
+    const target = loop && hasDuration && loopEnd > loopStart ? loopStart + time % (loopEnd-loopStart) :
+      hasDuration ? Math.min(time, Math.max(0, element.duration - 0.04)) : time;
+    const active = playing && (loop || !hasDuration || time < element.duration - 0.04);
+    if (Math.abs(element.currentTime - target) > (active ? 0.28 : 0.035) ||
+        (sourceRange && (element.currentTime < loopStart || element.currentTime >= loopEnd))) element.currentTime = target;
     if (active && element.paused) void element.play().catch(() => {});
     if (!active && !element.paused) element.pause();
   }
@@ -619,7 +637,7 @@ function SyncedClip({ kind, url, time, playing, muted, onDuration }: { kind: "vi
     if (Number.isFinite(element.duration) && element.duration > 0) onDuration?.(Math.round(element.duration * 1000));
     sync(element);
   }} onError={() => setFailed(true)} /> :
-    <audio ref={(element) => { ref.current = element; }} src={url} onLoadedMetadata={(event) => sync(event.currentTarget)} onError={() => setFailed(true)} />;
+    <audio ref={(element) => { ref.current = element; }} src={url} loop={loop} onLoadedMetadata={(event) => sync(event.currentTarget)} onError={() => setFailed(true)} />;
 }
 
 function RecordingMonitor({ track }: {track: MediaStreamTrack}) {

@@ -1,6 +1,8 @@
 import { useEffect, useState, type RefObject } from "react";
 import { SceneTitleInput, type SceneRename } from "./SceneTitleInput";
 import { Filmstrip } from "./Filmstrip";
+import { BgmTrack } from "./BgmTrack";
+import type { BgmClip } from "./project";
 import { TimelineRuler } from "./TimelineRuler";
 import { useReorderDrag } from "./useReorderDrag";
 import { sceneLabel, sourceDragType, sourceUrl, type Asset, type Scene } from "./project";
@@ -10,6 +12,8 @@ import { visualClips, trackNumbers, endOf } from "./visualTracks";
 import { sourceTime, videoRange } from "./videoTrim";
 
 type Props = {
+  bgm: BgmClip[];
+  onBgmChange: (clips: BgmClip[]) => void;
   sections: ReturnType<typeof timelineSections>;
   assets: Map<string, Asset>;
   mediaDir: string;
@@ -32,7 +36,7 @@ type Props = {
   onMenu: (menu: MenuAction) => void;
 };
 
-export function TimelineOverview({ sections, assets, mediaDir, selectedId, scrollRef, pixelsPerMs, viewport, onSeek, time, playing, busy, dragAsset, select, onOpenDetail, add, onImport, onRemove, rename, onMenu, onMove }: Props) {
+export function TimelineOverview({ sections, assets, bgm, onBgmChange, mediaDir, selectedId, scrollRef, pixelsPerMs, viewport, onSeek, time, playing, busy, dragAsset, select, onOpenDetail, add, onImport, onRemove, rename, onMenu, onMove }: Props) {
   const [picker, setPicker] = useState<string | null>(null);
   const reorder = useReorderDrag("application/x-cutroom-scene", "overview", sections.map(entry => entry.scene.id), busy, onMove);
   const activePicker = sections.find((entry) => entry.scene.id === picker && picker === selectedId);
@@ -120,6 +124,7 @@ export function TimelineOverview({ sections, assets, mediaDir, selectedId, scrol
             </div>;
           })}
           </div>
+          <BgmTrack sections={sections} clips={bgm} assets={assets} scale={pixelsPerMs} busy={busy} dragAsset={dragAsset} time={time} onChange={onBgmChange}/>
           <i className="overview-head" aria-hidden="true" style={{ left: Math.max(0, Math.min(duration * pixelsPerMs - 2, head - 1)) }} />
         </div>}
     </div>

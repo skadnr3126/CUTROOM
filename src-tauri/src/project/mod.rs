@@ -4,6 +4,7 @@ pub(crate) mod ass_preview;
 #[cfg(test)]
 mod ass_tests;
 mod asset_filename;
+mod bgm;
 mod caption_track;
 pub(crate) mod capture;
 pub(crate) mod chat_timeline;
@@ -73,6 +74,10 @@ pub(crate) struct ProjectView {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum Edit {
+    SetBgm {
+        expected: Vec<bgm::Clip>,
+        clips: Vec<bgm::Clip>,
+    },
     SceneTool {
         scene_id: Uuid,
         expected: u32,
@@ -326,7 +331,9 @@ impl ProjectStore {
         let mut inverse = None;
         let project = self.commit_files(|project, media, added, _retired| {
             let mut removed = Vec::new();
+            let previous_order = (!project.bgm.is_empty() && !undoing).then(|| undo::order(project));
             match edit {
+                Edit::SetBgm { expected, clips } => inverse = project.edit_bgm(expected, clips)?,
                 Edit::SceneTool {
                     scene_id,
                     expected,
@@ -489,6 +496,12 @@ impl ProjectStore {
             }
             if !removed.is_empty() {
                 staged.publish(&removed, project, media, added)?;
+            }
+            if let Some(change) = previous_order.and_then(|order| project.reconcile_bgm(&order)) {
+                inverse = Some(match inverse.take() {
+                    Some(edit) => Inverse::Group(vec![edit, change]),
+                    None => change,
+                });
             }
             Ok(())
         })?;

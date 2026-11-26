@@ -13,6 +13,11 @@
 
 ## 구간과 미디어
 
+- `list_bgm`으로 보관함 음악의 ID·길이와 현재 BGM 클립을 조회한다. `timeline`에서 시작·끝 구간 ID를 가져온다. `set_bgm`에는 projectId, clip을 보낸다. 추가할 때 새 clip.id를 한 번 생성하고 재시도에도 유지한다. 수정할 때는 직전에 읽은 클립을 expected에 그대로 보내고 clip에는 원하는 변경만 적용한 전체 값을 담는다. `delete_bgm`에는 projectId와 삭제할 클립의 expected를 보낸다.
+- start/end는 {sceneId, offsetMs}다. offsetMs 0은 그 구간 시작, null은 길이가 바뀌어도 따라가는 구간 끝이다. volume은 0~100, fadeInMs/fadeOutMs는 배치 전체의 페이드 시간이다. sourceRange의 inMs와 outMs로 원곡 중 반복할 부분을 지정한다. 곡 전체를 쓰려면 null로 설정한다. 편집 화면에서는 BGM의 양끝을 드래그해 배치 범위를 바꾸고, 선택한 클립의 **곡 사용 범위** 막대에서 양끝 또는 사용할 부분을 드래그한다.
+
+전체 타임라인의 BGM 줄에 보관함의 오디오를 놓거나 ‘BGM 추가’에서 선택한다. 시작 위치부터 마지막 구간 끝까지 이어지며 짧은 곡은 반복한다. 클립 양끝을 드래그하거나 시작·끝 구간을 선택하면 구간 길이를 바꿔도 붙인 경계를 따라간다. 클립을 클릭해 음량과 페이드 시간을 설정한다. 전체 미리보기·구간 미리보기·MP4 내보내기 모두 같은 곡 위치와 페이드를 사용한다.
+
 - Windows 개발판은 `npm.cmd run tauri dev` 시작 시 FFmpeg와 FFprobe를 확인한다. 도구가 빠져 있으면 설치판과 같은 배포본을 내려받아 준비한다. 이미 실행 중인 개발판은 `%LOCALAPPDATA%\com.namuk.tauri-app\tools`에 둔 두 도구도 사용할 수 있다.
 - `rename_scene`은 조회한 구간 ID와 현재 리비전으로 이름을 바꾼다. `move_scene`은 기준 구간 ID를 사용해 바로 앞이나 뒤에 놓는다. 변경 후 `timeline`에서 이름과 순서를 확인한다. `expected`가 필요한 명령이 리비전 충돌을 반환하면 다시 읽고 이번 수정만 반영한다. 자막 시간은 구간 시작 기준 밀리초이며 `seek`로 해당 위치를 보여줄 수 있다.
 - 새 이미지·영상·오디오는 대상 프로젝트의 `mediaDirectory` 아래 적절한 폴더에 완성 파일로 놓는다. 임시 렌더 파일은 보관함 밖에서 만든다. `register_output`에는 작업 시작 때 확인한 `projectId`, 새 출력마다 고유한 `jobId`, 파일의 절대 경로를 보낸다. 같은 출력의 재시도에는 동일한 `jobId`를 쓴다.

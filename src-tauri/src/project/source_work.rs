@@ -153,6 +153,7 @@ impl SourceRecipe {
             );
         }
         Ok(Project {
+            bgm: Vec::new(),
             media_tree: project.media_tree,
             media_transaction: None,
             folders: project.folders.clone(),

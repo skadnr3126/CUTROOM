@@ -55,6 +55,24 @@ function tool(action, description, inputSchema) {
   });
 }
 tool("timeline", "List the open Cutroom project's scenes, durations, IDs and revisions.", {});
+const bgmAnchor = z.object({sceneId, offsetMs:atMs.nullable().describe("0 = scene start, null = follow the scene end, or a scene-relative millisecond position")}).strict();
+const bgmClip = z.object({
+  id:z.string().uuid().describe("Stable BGM clip ID. Generate once for an addition and reuse when retrying."),
+  assetId:z.string().uuid().describe("Audio asset from list_bgm"),
+  start:bgmAnchor, end:bgmAnchor,
+  volume:z.number().int().min(0).max(100),
+  fadeInMs:z.number().int().nonnegative(), fadeOutMs:z.number().int().nonnegative(),
+  sourceRange:z.object({inMs:z.number().int().nonnegative(), outMs:z.number().int().positive()}).strict().nullable().optional()
+    .describe("Loop this excerpt of the original song in milliseconds. Omit or use null for the whole song.")
+}).strict();
+const bgmProject = z.string().uuid().describe("Open project ID returned by list_bgm");
+tool("list_bgm", "List music in the source bin and all timeline BGM clips with their editable settings. Use timeline for scene IDs.", {});
+tool("set_bgm", "Add or update one timeline BGM. For a new clip use a fresh UUID, volume 35 and zero fades unless requested. To update, copy the previous clip from list_bgm to expected and change only the desired fields in clip. Undoable.", {
+  projectId:bgmProject, clip:bgmClip, expected:bgmClip.nullable().optional()
+});
+tool("delete_bgm", "Remove one timeline BGM clip, preserving its source music in the bin. Pass the clip previously read from list_bgm. Undoable.", {
+  projectId:bgmProject, expected:bgmClip
+});
 tool("get_selection", "Read the active editor selection and timeline playhead, in milliseconds.", {});
 tool("get_asset", "Resolve an asset in the open project to its media path, duration and audio metadata.", {assetId:z.string().uuid()});
 tool("scene", "Read a scene including its captions, source placements and current revision.", { sceneId });

@@ -57,13 +57,17 @@ export type SceneSettings = {
 
 export type Scene = SceneSettings & { id: string; revision: number };
 export type GuidelineStyle = { id: string; name: string; text: string; referenceIds: string[] };
-export type Project = { folders?: SourceFolder[]; timelineJobs?: string[]; title: string; guidelineStyles: GuidelineStyle[]; selectedStyleId: string | null; guidelinesRevision: number; scenes: Scene[]; assets: Asset[] };
+export type BgmAnchor = {sceneId: string; offsetMs: number | null};
+export type BgmSourceRange = {inMs: number; outMs: number};
+export type BgmClip = {id: string; assetId: string; start: BgmAnchor; end: BgmAnchor; volume: number; fadeInMs: number; fadeOutMs: number; sourceRange?: BgmSourceRange | null};
+export type Project = { bgm?: BgmClip[]; folders?: SourceFolder[]; timelineJobs?: string[]; title: string; guidelineStyles: GuidelineStyle[]; selectedStyleId: string | null; guidelinesRevision: number; scenes: Scene[]; assets: Asset[] };
 type View = { mediaExtensions: string[]; project: Project; mediaDir: string; exportAvailable: boolean;
   undo: { token: string; sceneId: string | null; removesScene: boolean } | null };
 
 export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
 
 export type Edit =
+  | { type: "setBgm"; expected: BgmClip[]; clips: BgmClip[] }
   | { type: "sceneTool"; sceneId: string; expected: number; tool: SceneTool }
   | FolderEdit
   | { type: "cutClipRange"; folderId: string | null; sceneId: string; expected: number; range: { clipId: string; startMs: number; endMs: number } }
