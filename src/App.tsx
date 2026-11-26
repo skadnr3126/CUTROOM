@@ -305,12 +305,18 @@ function Editor({session, initialSeek}: {session:ProjectSession; initialSeek?:Ed
             return next?.scenes.find(s=>s.id===target.id)?.revision ?? null;
           }}
           onVisualChange={storePlacement}
-          onCutRange={async (target, clipId, startMs, endMs) => {
-            const next = await edit({ type: "cutClipRange", folderId: activeFolder, sceneId: target.id, expected: target.revision, range: { clipId, startMs, endMs } });
-            if (next) {
-              rebaseTimelineDrafts(next);
-              setNotice({ text: "잘라낸 영상을 소스 보관함에 저장했습니다." });
+          onClipEdit={async (target, operation) => {
+            const request = operation.type === "cutClipRange" && operation.disposition === "library"
+              ? { ...operation, folderId: activeFolder } : operation;
+            const next = await edit({ ...request, sceneId: target.id, expected: target.revision });
+            if (!next) return false;
+            rebaseTimelineDrafts(next);
+            setMode("timeline");
+            if (operation.type === "cutClipRange") {
+              setNotice({ text: operation.disposition === "library"
+                ? "선택 범위를 잘라내고 소스 보관함에 저장했습니다." : "선택 범위를 타임라인에서 삭제했습니다." });
             }
+            return true;
           }}
           onRenameSource={async (id, name) => !!await edit({ type: "renameSource", id, name })}
           onRelinkSource={relinkSource}

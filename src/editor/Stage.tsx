@@ -2,7 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { openSession, type EditorSeek } from "./projectSession";
 import { useCutroomEvent } from "./useCutroomEvent";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { sceneLabel, mediaTrack, type SceneSettings, type SceneTool, sourceDragType, sourceUrl, timelineTime, videoDuration, type Asset, type MediaTrack, type Project, type Scene } from "./project";
+import { sceneLabel, mediaTrack, type ClipEdit, type SceneSettings, type SceneTool, sourceDragType, sourceUrl, timelineTime, videoDuration, type Asset, type MediaTrack, type Project, type Scene } from "./project";
 import { CaptionTrack } from "./CaptionTrack";
 import { AssCaptionTrack } from "./AssCaptionTrack";
 import { sceneCaptions, captionAt, type CaptionDraft } from "./captionCues";
@@ -10,12 +10,14 @@ import { AddCaptionDialog } from "./AddCaptionDialog";
 import { AssEditor, useAssRows } from "./AssEditor";
 import { adjacentCaptionStarts, useCaptionStarts } from "./useCaptionStarts";
 import { AssPreview } from "./AssPreview";
+import { SeamlessVideo, type PreviewVideoSource } from "./SeamlessVideo";
+import { TimelineImage } from "./TimelineImage";
 import { AssFileButton } from "./AssFileButton";
 import { CaptionEditor } from "./CaptionEditor";
 import { VisualTrack } from "./VisualTrack";
 import { NeighborPreviewTrack } from "./NeighborPreviewTrack";
 import { CutRangeControls } from "./CutRangeControls";
-import { visualClips, trackSettings, trackNumbers, canSplit, splitClip, resizeClip, removeClip, placeClip, endOf, fullFrame, type TrackClip } from "./visualTracks";
+import { visualClips, trackSettings, trackNumbers, canSplit, resizeClip, removeClip, placeClip, endOf, fullFrame, frameStyle, type TrackClip } from "./visualTracks";
 import { timelineSections, type TimelinePiece } from "./timeline";
 import type { FolderControls } from "./BinFolders";
 import { SourceBin } from "./SourceBin";
@@ -28,14 +30,12 @@ import { TimelineRuler } from "./TimelineRuler";
 import { useTimelineZoom } from "./useTimelineZoom";
 import { ClipMenu, type MenuAction } from "./ClipMenu";
 import { sourceTime, videoRange } from "./videoTrim";
-
-function frameStyle(frame = fullFrame) {
-  return {width:frame.size+"%",height:frame.size+"%",left:(100-frame.size)*frame.x/100+"%",top:(100-frame.size)*frame.y/100+"%"};
-}
+import { overlayPlaybackRuns } from "./overlayPlaybackRuns";
 
 type Track = MediaTrack | "captions";
 
 const transitionSideMs = 2000;
+const previewPrerollMs = 2000;
 const previewRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
 type Props = {
@@ -45,7 +45,7 @@ type Props = {
   recordingTrack: MediaStreamTrack | null;
   onSceneTool: (scene: Scene, tool: SceneTool) => Promise<number|null>;
   onVisualChange: (scene: Scene, settings: SceneSettings) => Promise<void>;
-  onCutRange: (scene: Scene, clipId: string, startMs: number, endMs: number) => void;
+  onClipEdit: (scene: Scene, operation: ClipEdit) => Promise<boolean>;
   captureControls: import("react").ReactNode;
   project: Project;
   mediaDir: string;
@@ -69,7 +69,7 @@ type Props = {
   busy: boolean;
 };
 
-export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool, onVisualChange, onCutRange, captureControls, project, onBgmChange, mediaDir, scene, selectionVersion, source, mode, onMode, onChooseScene, onChooseSource, onImport, onLink, onChangePlacement, onSaveClip, onRenameSource, onRelinkSource, onRemoveSource, onRemoveScene, onMoveScene, sceneRename, busy }: Props) {
+export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool, onVisualChange, onClipEdit, captureControls, project, onBgmChange, mediaDir, scene, selectionVersion, source, mode, onMode, onChooseScene, onChooseSource, onImport, onLink, onChangePlacement, onSaveClip, onRenameSource, onRelinkSource, onRemoveSource, onRemoveScene, onMoveScene, sceneRename, busy }: Props) {
   const [watchRecording, setWatchRecording] = useState(true);
   const sourceMedia = useRef<HTMLMediaElement | null>(null);
   useEffect(() => { setWatchRecording(true); }, [recordingTrack]);
@@ -138,6 +138,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const [picked, setPicked] = useState<{ sceneId: string; track: Track } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const positionRef = useRef(0);
+  const seekVersion = useRef(0);
   const byId = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
   const binAssets = useMemo(() => project.assets.filter((asset) => !asset.removedFromBin), [project.assets]);
   const [menu, setMenu] = useState<MenuAction | null>(null);
@@ -160,6 +161,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
 
 
   function seek(value: number) {
+    seekVersion.current++;
+    movePlayhead(value);
+  }
+
+  function movePlayhead(value: number) {
     positionRef.current = value;
     setPosition(value);
   }
@@ -252,7 +258,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     const tick = (now: number) => {
       const end = boundaryRun ? Math.min(boundaryRun.end - 1, playbackEnd) : playbackEnd;
       const next = Math.min(end, initial + (now - started) * previewRate);
-      seek(next);
+      movePlayhead(next);
       if (next < end) frame = requestAnimationFrame(tick);
       else setPlaying(false);
     };
@@ -263,8 +269,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const time = Math.max(playbackStart, Math.min(position, playbackEnd));
   const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({clip, start:anchorTime(clip.start,sections), end:anchorTime(clip.end,sections)})), [project.bgm,sections]);
   const visibleSpans = scope === "detail" && !transitionMode ? detail : spans;
-  const current = visibleSpans.find((span) => Math.min(time, playbackEnd - 1) < span.end) ?? visibleSpans[visibleSpans.length - 1];
+  const currentIndex = visibleSpans.findIndex((span) => Math.min(time, playbackEnd - 1) < span.end);
+  const current = visibleSpans[currentIndex] ?? visibleSpans[visibleSpans.length - 1];
   const currentScene = current?.scene;
+  const overlayRuns = useMemo(() => overlayPlaybackRuns(sections), [sections]);
+  const overlays = current && overlayRuns.get(current.owner.id);
   const [assDraft, setAssDraft] = useState<{ scene: Scene; at: number; line?: number } | null>(null);
   const [assPreview, setAssPreview] = useState<string>("");
   const assTarget = assDraft && sections.find(s => s.scene.id === assDraft.scene.id);
@@ -405,10 +414,52 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const localTime = current ? Math.min(time - current.start, current.durationMs - 1) : 0;
   const visualPlacement = currentScene?.visual;
   const range = currentScene && visualPlacement?.trim ? clipRange(currentScene) : null;
-  const clipTime = range ? localTime - range.offsetMs + range.inMs : localTime + (visualPlacement?.inMs ?? 0);
+  const sourceStart = range?.inMs ?? visualPlacement?.inMs ?? 0;
+  const clipTime = localTime - (range?.offsetMs ?? 0) + sourceStart;
   const insideRange = !range || (localTime >= range.offsetMs && clipTime < range.outMs);
   const visual = visualPlacement && insideRange ? byId.get(visualPlacement.assetId) : undefined;
   const audio = currentScene?.audio && byId.get(currentScene.audio.assetId);
+
+  function shouldPreroll(startMs: number) {
+    return startMs < playbackEnd && startMs >= time && startMs - time <= previewPrerollMs * previewRate;
+  }
+
+  function measureUnknownDuration(asset: Asset) {
+    if (asset.durationMs == null && measured[asset.id] == null) {
+      return (ms: number) => setMeasured(old => ({ ...old, [asset.id]: ms }));
+    }
+  }
+
+  let currentVideo: PreviewVideoSource | undefined;
+  if (current && visual?.kind === "video" && visualPlacement) {
+    currentVideo = {
+      url: sourceUrl(mediaDir, visual),
+      originMs: current.start + (range?.offsetMs ?? 0) - sourceStart,
+      timeMs: clipTime,
+      endMs: range?.outMs ?? sourceStart + current.durationMs,
+      muted: !!audio || visualPlacement.muted,
+      onDuration: measureUnknownDuration(visual),
+    };
+  }
+  let nextVideo: PreviewVideoSource | undefined;
+  let nextImageUrl: string | undefined;
+  if (visual && current && currentIndex >= 0 && shouldPreroll(current.end)) {
+    const followingPiece = visibleSpans[currentIndex + 1];
+    const placement = followingPiece?.scene.visual;
+    const asset = placement && byId.get(placement.assetId);
+    if (visual.kind === "image" && asset?.kind === "image") {
+      nextImageUrl = sourceUrl(mediaDir, asset);
+    } else if (currentVideo && placement && asset?.kind === "video") {
+      const nextRange = clipRange(followingPiece.scene);
+      if (nextRange && nextRange.offsetMs === 0 && nextRange.outMs > nextRange.inMs) {
+        nextVideo = {
+          url: sourceUrl(mediaDir, asset),
+          originMs: followingPiece.start - nextRange.inMs,
+          timeMs: nextRange.inMs,
+        };
+      }
+    }
+  }
 
   function togglePlay() {
     if (!duration) return;
@@ -464,36 +515,57 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               <SourcePreview key={source.id} asset={source} mediaDir={mediaDir} rate={previewRate} media={sourceMedia} />
             ) : (
               <div className="picture composite-picture" aria-label="편집본 미리보기"><div className="composite-frame">
-                <div className="preview-layer" style={frameStyle(visualPlacement?.frame)}>
-                {visual?.kind === "video" ? (
-                  <SyncedClip key={`${currentScene?.id}:${visual.id}`} kind="video" url={sourceUrl(mediaDir, visual)}
-                    onDuration={visual.durationMs == null ? (ms) => setMeasured((current) => ({ ...current, [visual.id]: ms })) : undefined}
-                    time={clipTime / 1000} playing={playing} rate={previewRate} muted={!!audio || visualPlacement?.muted} />
-                ) : visual?.kind === "image" ? (
-                  <PreviewImage key={visual.id} url={sourceUrl(mediaDir, visual)} name={visual.name} />
+                {visual?.kind === "image" && current ? (
+                  <TimelineImage url={sourceUrl(mediaDir, visual)} name={visual.name} frame={visualPlacement?.frame}
+                    startMs={current.start} endMs={current.end} playing={playing} seekVersion={seekVersion.current} nextUrl={nextImageUrl} />
                 ) : (
-                  !hasPictureAbove && <div className="picture-empty"><span aria-hidden="true">▷</span>{range ? "이 위치에는 영상 클립이 없습니다" : current ? "이 구간에 영상 소스를 넣어 보세요" : "대본을 추가하고 편집을 시작하세요"}</div>
+                  <div className="preview-layer" style={frameStyle(visualPlacement?.frame)}>
+                    {currentVideo ? (
+                      <SeamlessVideo current={currentVideo} next={nextVideo} playing={playing} rate={previewRate} />
+                    ) : (
+                      !hasPictureAbove && <div className="picture-empty"><span aria-hidden="true">▷</span>{range ? "이 위치에는 영상 클립이 없습니다" : current ? "이 구간에 영상 소스를 넣어 보세요" : "대본을 추가하고 편집을 시작하세요"}</div>
+                    )}
+                  </div>
                 )}
-                </div>
                 {bgmRanges.map(({clip,start,end}) => {
                   const asset = byId.get(clip.assetId);
                   if (!asset || time < start || time >= end) return null;
                   const fadeIn = clip.fadeInMs ? Math.min(1,(time-start)/Math.min(end-start,clip.fadeInMs)) : 1;
                   const fadeOut = clip.fadeOutMs ? Math.min(1,(end-time)/Math.min(end-start,clip.fadeOutMs)) : 1;
-                  return <SyncedClip key={clip.id+":"+asset.id} kind="audio" url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
+                  return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
                     playing={playing} rate={previewRate} volume={clip.volume/100*fadeIn*fadeOut}/>;
                 })}
-                {audio && <SyncedClip key={`${current?.owner.id}:${audio.id}`} kind="audio" url={sourceUrl(mediaDir, audio)}
+                {audio && <SyncedAudio key={`${current?.owner.id}:${audio.id}`} url={sourceUrl(mediaDir, audio)}
                   time={(localTime + (current ? current.start - current.sectionStart : 0) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} rate={previewRate} />}
-                {current && (current.owner.overlays ?? []).map(layer => {
+                {current && overlays?.map(({ layer, key, start, next }) => {
                   const at = Math.min(time - current.sectionStart, sections[current.index].durationMs - 1) - layer.startMs;
                   const asset = byId.get(layer.assetId);
                   if (!asset || at < 0 || at >= layer.durationMs) return null;
-                  return <div className="preview-layer" key={layer.id} style={frameStyle(layer)}>
-                    {asset.kind === "video" ? <SyncedClip kind="video" url={sourceUrl(mediaDir, asset)} time={(at+layer.inMs)/1000} playing={playing} rate={previewRate} muted={!layer.sound || !!audio}
-                      onDuration={asset.durationMs == null ? ms => setMeasured(old => ({...old,[asset.id]:ms})) : undefined} /> :
-                      <PreviewImage url={sourceUrl(mediaDir, asset)} name={asset.name} />}
-                  </div>;
+                  const nextAsset = next && shouldPreroll(next.start) ? byId.get(next.layer.assetId) : undefined;
+                  if (asset.kind === "image") {
+                    return <TimelineImage key={key} url={sourceUrl(mediaDir, asset)} name={asset.name} frame={layer}
+                      startMs={start} endMs={start + layer.durationMs} playing={playing} seekVersion={seekVersion.current}
+                      nextUrl={nextAsset?.kind === "image" ? sourceUrl(mediaDir, nextAsset) : undefined} />;
+                  }
+                  return (
+                    <div className="preview-layer" key={key} style={frameStyle(layer)}>
+                      <SeamlessVideo
+                        current={{
+                          url: sourceUrl(mediaDir, asset),
+                          originMs: start - layer.inMs,
+                          timeMs: at + layer.inMs,
+                          endMs: layer.inMs + layer.durationMs,
+                          muted: !layer.sound || !!audio,
+                          onDuration: measureUnknownDuration(asset),
+                        }}
+                        next={next && nextAsset?.kind === "video" ? {
+                          url: sourceUrl(mediaDir, nextAsset), originMs: next.start - next.layer.inMs, timeMs: next.layer.inMs,
+                        } : undefined}
+                        playing={playing}
+                        rate={previewRate}
+                      />
+                    </div>
+                  );
                 })}
                 {activeAss && current && <AssPreview source={assDraft?.scene.id===current.owner.id ? assPreview : activeAss.source} ms={Math.max(0,time-current.sectionStart)}/>}
                 {!activeAss && previewCaption?.trim() && <div className="caption-overlay"><span>{previewCaption}</span></div>}
@@ -548,8 +620,10 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             <span className="panel-meta">{section ? sceneLabel(section.scene, section.index) : "구간 –"}</span>
             <button className="button compact" disabled={busy || !section || section.index + 1 >= sections.length} onClick={() => goToSection(1)}>다음 구간</button>
             <div className="clip-tools" role="group" aria-label="클립 편집 도구">
-            <button className="button compact" disabled={busy || !allowSplit} onClick={() => {
-              if (allowSplit) changeItems(splitClip(items,splitTarget,at,splitAsset.kind === "video"));
+            <button className="button compact" disabled={busy || !allowSplit} title="재생바 위치에서 클립을 둘로 나누고 양쪽을 모두 유지합니다." onClick={() => {
+              if (allowSplit && scene) {
+                void onClipEdit(scene, { type: "splitClip", clipId: splitTarget.id, atMs: at - splitTarget.startMs });
+              }
             }}>클립 나누기</button>
             <button className="button compact" disabled={busy || !selected || !scene} onClick={() => {
               if (scene && selected) void onSceneTool(scene, { type: "duplicateClip", clipId: selected.id });
@@ -557,9 +631,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             {scene && selected && byId.get(selected.assetId)?.kind === "video" &&
               <CutRangeControls key={scene.id + ":" + scene.revision + ":" + selected.id} clip={selected} playhead={at}
                 sourceMs={byId.get(selected.assetId)?.durationMs ?? measured[selected.assetId]} busy={busy || previewingNeighbor}
-                pause={() => setPlaying(false)} cut={(start, end) => {
-                  scrubSection(selected.startMs + start);
-                  onCutRange(scene, selected.id, start, end);
+                pause={() => setPlaying(false)} cut={async (startMs, endMs, disposition) => {
+                  setPlaying(false);
+                  const endPosition = positionRef.current;
+                  const saved = await onClipEdit(scene, { type: "cutClipRange", disposition, range: { clipId: selected.id, startMs, endMs } });
+                  if (saved && positionRef.current === endPosition) scrubSection(selected.startMs + startMs);
                 }} />}
             <button className="button compact" disabled={busy || (!selected && !(picked?.track === "audio" && scene?.audio))}
               onClick={() => { if (selected) changeItems(removeClip(items,selected)); else if (scene) onChangePlacement(scene.id,"audio",null); }}>
@@ -718,10 +794,20 @@ function SourcePreview({ asset, mediaDir, rate, media }: { asset: Asset; mediaDi
   );
 }
 
-function SyncedClip({ kind, url, time, playing, rate, muted, onDuration, loop=false, volume=1, sourceRange }: { kind: "video" | "audio"; url: string; time: number; playing: boolean; rate: number; muted?: boolean; onDuration?: (ms: number) => void; loop?: boolean; volume?: number; sourceRange?: BgmSourceRange | null }) {
-  const ref = useRef<HTMLMediaElement | null>(null);
+type SyncedAudioProps = {
+  url: string;
+  time: number;
+  playing: boolean;
+  rate: number;
+  loop?: boolean;
+  volume?: number;
+  sourceRange?: BgmSourceRange | null;
+};
+
+function SyncedAudio({ url, time, playing, rate, loop = false, volume = 1, sourceRange }: SyncedAudioProps) {
+  const ref = useRef<HTMLAudioElement>(null);
   const [failed, setFailed] = useState(false);
-  function sync(element: HTMLMediaElement) {
+  function sync(element: HTMLAudioElement) {
     if (!element.readyState) return;
     if (element.playbackRate !== rate) element.playbackRate = rate;
     const hasDuration = Number.isFinite(element.duration);
@@ -739,13 +825,8 @@ function SyncedClip({ kind, url, time, playing, rate, muted, onDuration, loop=fa
   useEffect(() => {
     if (ref.current) sync(ref.current);
   });
-  if (failed) return <p className="preview-error">이 {kind === "video" ? "영상" : "음성"} 소스를 재생할 수 없습니다.</p>;
-  return kind === "video" ? <video ref={(element) => { ref.current = element; }} src={url} muted={muted} playsInline onLoadedMetadata={(event) => {
-    const element = event.currentTarget;
-    if (Number.isFinite(element.duration) && element.duration > 0) onDuration?.(Math.round(element.duration * 1000));
-    sync(element);
-  }} onError={() => setFailed(true)} /> :
-    <audio ref={(element) => { ref.current = element; }} src={url} loop={loop} onLoadedMetadata={(event) => sync(event.currentTarget)} onError={() => setFailed(true)} />;
+  if (failed) return <p className="preview-error">이 음성 소스를 재생할 수 없습니다.</p>;
+  return <audio ref={ref} src={url} loop={loop} onLoadedMetadata={event => sync(event.currentTarget)} onError={() => setFailed(true)} />;
 }
 
 function RecordingMonitor({ track }: {track: MediaStreamTrack}) {

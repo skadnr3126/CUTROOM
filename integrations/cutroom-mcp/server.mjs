@@ -17,7 +17,9 @@ async function request(command) {
     const socket = createConnection({ host: "127.0.0.1", port: endpoint.port });
     socket.setEncoding("utf8");
     let response = "";
-    socket.setTimeout(command.action === "export_scene" ? 30 * 60_000 : 90_000,
+    const rendersVideo = command.action === "export_scene" ||
+      (command.action === "cut_clip_range" && command.disposition === "library");
+    socket.setTimeout(rendersVideo ? 30 * 60_000 : 90_000,
       () => socket.destroy(new Error("컷룸 응답 시간이 초과되었습니다. 타임라인을 조회해 반영 여부를 확인하세요.")));
     socket.on("error", reject);
     socket.on("connect", () => socket.write(JSON.stringify({ token: endpoint.token, command }) + "\n"));
@@ -76,6 +78,21 @@ tool("delete_bgm", "Remove one timeline BGM clip, preserving its source music in
 tool("get_selection", "Read the active editor selection and timeline playhead, in milliseconds.", {});
 tool("get_asset", "Resolve an asset in the open project to its media path, duration and audio metadata.", {assetId:z.string().uuid()});
 tool("scene", "Read a scene including its captions, source placements and current revision.", { sceneId });
+const editClip = {
+  projectId: z.string().uuid().describe("Open project ID from timeline"),
+  sceneId, expected
+};
+const clipId = z.string().uuid().describe("ID from scene.clips or scene.overlays. For a single scene.visual with no clips, use sceneId.");
+const clipMs = z.number().int().nonnegative().describe("Milliseconds from the clip's timeline start, including trim.offsetMs if present");
+tool("split_clip", "Split a video or image clip at one time and keep both parts on the timeline. No media file is created. Read scene before editing and again for the new clip IDs. Undoable.", {
+  ...editClip, clipId, atMs: clipMs
+});
+tool("cut_clip_range", "Remove the half-open interval [startMs, endMs) from a main or overlay video clip and join the remaining parts. Leave at least 100 ms on both sides, with both cut points inside the visible video. Choose discard to remove only from the timeline, or library to also save the removed footage as a new MP4. The source file is preserved. Undoable timeline edit.", {
+  ...editClip,
+  range: z.object({ clipId, startMs: clipMs, endMs: clipMs }).strict(),
+  disposition: z.enum(["discard", "library"]),
+  folderId: z.string().uuid().optional().describe("Destination bin folder from timeline for library cuts. Omit to save at the bin root.")
+});
 tool("rename_scene", "Rename a timeline scene. Read its revision from timeline first. An empty name restores the default numbered label. Undoable.", {
   sceneId, expected, name: z.string().describe("New single-line scene name")
 });

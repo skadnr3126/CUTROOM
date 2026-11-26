@@ -1,4 +1,4 @@
-import type { SceneClip, VisualPlacement } from "./project";
+import type { VisualPlacement } from "./project";
 
 export type VideoRange = { inMs: number; outMs: number; offsetMs: number };
 export type TrimEdge = "start" | "end";
@@ -8,16 +8,6 @@ export function videoCutPoint(range: VideoRange, durationMs: number, elapsedMs: 
   if (elapsedMs < 100 || durationMs - elapsedMs < 100) return null;
   const sourceMs = range.inMs + elapsedMs - range.offsetMs;
   return sourceMs > range.inMs && sourceMs < range.outMs ? sourceMs : null;
-}
-
-export function splitVideoClip(clip: SceneClip, elapsedMs: number, sourceMs: number): [SceneClip, SceneClip] {
-  // Older untrimmed placements can hold the last frame after the source ends.
-  // Keep that behavior on the right and any explicit leading padding on the left.
-  return [
-    { ...clip, durationMs: elapsedMs, trim: clip.trim && { ...clip.trim, outMs: sourceMs } },
-    { ...clip, id: crypto.randomUUID(), durationMs: clip.durationMs - elapsedMs, inMs: sourceMs,
-      trim: clip.trim && { offsetMs: 0, outMs: clip.trim.outMs } },
-  ];
 }
 
 export function videoRange(clip: VisualPlacement, sceneMs: number, sourceMs?: number | null): VideoRange {

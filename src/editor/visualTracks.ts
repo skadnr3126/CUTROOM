@@ -1,8 +1,14 @@
 import { sceneClips, sceneSettings, type Scene, type SceneClip, type SceneSettings } from "./project";
-import { splitVideoClip, videoCutPoint, videoRange, type TrimEdge } from "./videoTrim";
+import { videoCutPoint, videoRange, type TrimEdge } from "./videoTrim";
 
 export type TrackClip = SceneClip & { track: number; startMs: number };
 export const fullFrame = { size: 100, x: 50, y: 50 };
+export function frameStyle(frame = fullFrame) {
+  return {
+    width: frame.size + "%", height: frame.size + "%",
+    left: (100 - frame.size) * frame.x / 100 + "%", top: (100 - frame.size) * frame.y / 100 + "%",
+  };
+}
 const maxTime = 86_400_000;
 export const endOf = (clip: TrackClip) => clip.startMs + clip.durationMs;
 
@@ -122,10 +128,4 @@ export function canSplit(clip: TrackClip, at: number, video: boolean, sourceMs?:
   const elapsed = at - clip.startMs;
   return video ? videoCutPoint(videoRange(clip, clip.durationMs, sourceMs), clip.durationMs, elapsed) !== null
     : elapsed >= 100 && clip.durationMs - elapsed >= 100;
-}
-
-export function splitClip(items: TrackClip[], clip: TrackClip, at: number, video: boolean) {
-  const elapsed = at - clip.startMs;
-  const [left, right] = splitVideoClip(clip, elapsed, video ? clip.inMs + elapsed - (clip.trim?.offsetMs ?? 0) : 0);
-  return items.flatMap(c => c.id === clip.id ? [{ ...c, ...left }, { ...c, ...right, startMs: at }] : [c]);
 }

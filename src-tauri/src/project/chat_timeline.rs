@@ -50,6 +50,8 @@ pub(crate) enum Operation {
     CutClipRange {
         scene_id: Uuid,
         range: super::cut_range::ClipRange,
+        #[serde(default)]
+        disposition: super::cut_range::CutDisposition,
     },
     SaveGuidelineStyle {
         expected: u32,
@@ -122,7 +124,7 @@ pub(super) fn apply(
     job: Uuid,
     base: &[SceneVersion],
     ops: Vec<Operation>,
-    removed: &mut Vec<super::clip_media::SourceRange>,
+    cuts_to_save: &mut Vec<super::clip_media::SourceRange>,
 ) -> Result<Option<Inverse>, String> {
     if project.timeline_jobs.contains(&job) {
         return Ok(None);
@@ -139,7 +141,7 @@ pub(super) fn apply(
     }
     let mut inverses = Vec::new();
     for op in ops {
-        if let Some(inverse) = apply_one(project, job, op, removed)? {
+        if let Some(inverse) = apply_one(project, job, op, cuts_to_save)? {
             inverses.push(inverse);
         }
     }
@@ -151,16 +153,22 @@ fn apply_one(
     project: &mut Project,
     job: Uuid,
     op: Operation,
-    removed: &mut Vec<super::clip_media::SourceRange>,
+    cuts_to_save: &mut Vec<super::clip_media::SourceRange>,
 ) -> Result<Option<Inverse>, String> {
     let id = match op {
         Operation::SceneTool { scene_id, tool } => {
             let revision = project.scenes[project.scene_index(scene_id)?].revision;
             return tool.apply(project, scene_id, revision);
         }
-        Operation::CutClipRange { scene_id, range } => {
+        Operation::CutClipRange {
+            scene_id,
+            range,
+            disposition,
+        } => {
             let revision = project.scenes[project.scene_index(scene_id)?].revision;
-            return range.apply(project, scene_id, revision, removed).map(Some);
+            return range
+                .apply(project, scene_id, revision, disposition, cuts_to_save)
+                .map(Some);
         }
         Operation::SaveGuidelineStyle { expected, style } => {
             return project.save_style(expected, style);
@@ -327,38 +335,10 @@ fn apply_one(
         }
         Operation::Split { clip, at_ms, .. } => {
             let idx = index(clip, clips.len())?;
-            let mut left = clips[idx];
-            let asset = project.asset(left.visual.source.asset_id)?;
-            if asset.kind != Kind::Video
-                || at_ms < 100
-                || left.duration_ms.saturating_sub(at_ms) < 100
-            {
+            if project.asset(clips[idx].visual.source.asset_id)?.kind != Kind::Video {
                 return Err("영상 클립 안쪽의 분할 위치를 지정해 주세요.".into());
             }
-            let offset = left.visual.trim.map_or(0, |t| t.offset_ms);
-            let cut = at_ms
-                .checked_sub(offset)
-                .filter(|n| *n > 0)
-                .and_then(|n| left.visual.source.in_ms.checked_add(n))
-                .ok_or("영상이 있는 위치에서 분할해 주세요.")?;
-            if left.visual.trim.is_some_and(|t| cut >= t.out_ms)
-                || asset.duration_ms.is_some_and(|n| cut >= n)
-            {
-                return Err("영상이 있는 위치에서 분할해 주세요.".into());
-            }
-            let mut right = left;
-            right.id = Uuid::new_v4();
-            right.gap_ms = 0;
-            right.duration_ms -= at_ms;
-            right.visual.source.in_ms = cut;
-            if let Some(t) = &mut right.visual.trim {
-                t.offset_ms = 0;
-            }
-            left.duration_ms = at_ms;
-            if let Some(t) = &mut left.visual.trim {
-                t.out_ms = cut;
-            }
-            clips.splice(idx..=idx, [left, right]);
+            super::split_clip::split_main(project, &mut clips, idx, at_ms)?;
         }
         Operation::SceneTool { .. }
         | Operation::CutClipRange { .. }

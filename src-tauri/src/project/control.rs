@@ -1,11 +1,14 @@
 //! Local editing commands share the editor's revision checks, history and renderer.
-use super::{Edit, ProjectStore, caption_track::CaptionCue, files, render, scene_tools::SceneTool};
+use super::{
+    Edit, ProjectStore, bgm, caption_track::CaptionCue,
+    cut_range::{ClipRange, CutDisposition},
+    files, render, scene_tools::SceneTool,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Listener};
 use uuid::Uuid;
-use super::bgm;
 
 #[derive(Deserialize)]
 #[serde(
@@ -32,6 +35,21 @@ pub(crate) enum Command {
     },
     Scene {
         scene_id: Uuid,
+    },
+    SplitClip {
+        project_id: Uuid,
+        scene_id: Uuid,
+        expected: u32,
+        clip_id: Uuid,
+        at_ms: u64,
+    },
+    CutClipRange {
+        project_id: Uuid,
+        scene_id: Uuid,
+        expected: u32,
+        range: ClipRange,
+        disposition: CutDisposition,
+        folder_id: Option<Uuid>,
     },
     RenameScene {
         scene_id: Uuid,
@@ -115,6 +133,25 @@ fn selection(app: &AppHandle, store: &ProjectStore) -> Result<Value, String> {
     Ok(value)
 }
 
+fn edit_clip(
+    app: &AppHandle,
+    store: &ProjectStore,
+    project_id: Uuid,
+    scene_id: Uuid,
+    edit: Edit,
+) -> Result<Value, String> {
+    if store.id != project_id {
+        return Err("열린 프로젝트가 바뀌었습니다. 타임라인을 다시 조회해 주세요.".into());
+    }
+    let (view, saved_cuts) = store.edit_with_saved_cuts(edit)?;
+    let scene = &view.project.scenes[view.project.scene_index(scene_id)?];
+    let _ = app.emit("cutroom-project-changed", ());
+    Ok(json!({
+        "saved": true, "sceneId": scene.id, "revision": scene.revision,
+        "savedAssetId": saved_cuts.first()
+    }))
+}
+
 pub(crate) fn execute(
     app: &AppHandle,
     store: &ProjectStore,
@@ -152,6 +189,16 @@ pub(crate) fn execute(
         Command::Scene { scene_id } => {
             let scene = &project.scenes[project.scene_index(scene_id)?];
             return Ok(json!(scene));
+        }
+        Command::SplitClip { project_id, scene_id, expected, clip_id, at_ms } => {
+            return edit_clip(app, store, project_id, scene_id, Edit::SplitClip {
+                scene_id, expected, clip_id, at_ms,
+            });
+        }
+        Command::CutClipRange { project_id, scene_id, expected, range, disposition, folder_id } => {
+            return edit_clip(app, store, project_id, scene_id, Edit::CutClipRange {
+                scene_id, expected, range, disposition, folder_id,
+            });
         }
         Command::RenameScene {
             scene_id,

@@ -8,6 +8,14 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum CutDisposition {
+    Discard,
+    #[default]
+    Library,
+}
+
 #[derive(Default)]
 pub(super) struct StagedCuts {
     folder: Option<Uuid>,
@@ -17,18 +25,18 @@ pub(super) struct StagedCuts {
 impl StagedCuts {
     pub(super) fn publish(
         self,
-        removed: &[SourceRange],
+        to_save: &[SourceRange],
         project: &mut Project,
         media: &Path,
         added: &mut Vec<PathBuf>,
-    ) -> Result<(), String> {
-        if !self.clips.iter().map(|(range, _)| range).eq(removed) {
+    ) -> Result<Vec<Uuid>, String> {
+        if !self.clips.iter().map(|(range, _)| range).eq(to_save) {
             return Err("잘라낼 범위가 변경되었습니다. 다시 선택해 주세요.".into());
         }
-        for (_, clip) in self.clips {
-            clip.insert(project, media, added, self.folder)?;
-        }
-        Ok(())
+        self.clips
+            .into_iter()
+            .map(|(_, clip)| clip.insert(project, media, added, self.folder))
+            .collect()
     }
 }
 
@@ -36,16 +44,29 @@ impl ProjectStore {
     // Encode outside the project lock. The commit revalidates scene revisions and
     // resolved source ranges before publishing the MP4s and timeline together.
     pub(super) fn stage_cut_sources(&self, edit: &Edit) -> Result<StagedCuts, String> {
-        let mut removed = Vec::new();
+        let mut to_save = Vec::new();
         let (snapshot, folder) = match edit {
+            Edit::CutClipRange {
+                disposition: CutDisposition::Discard,
+                folder_id: Some(_),
+                ..
+            } => return Err("보관함에 저장할 때만 폴더를 지정할 수 있습니다.".into()),
             Edit::CutClipRange {
                 scene_id,
                 expected,
                 range,
                 folder_id,
+                disposition: CutDisposition::Library,
             } => {
                 let mut p = self.load()?;
-                range.apply(&mut p, *scene_id, *expected, &mut removed)?;
+                p.require_folder(*folder_id)?;
+                range.apply(
+                    &mut p,
+                    *scene_id,
+                    *expected,
+                    CutDisposition::Library,
+                    &mut to_save,
+                )?;
                 (p, *folder_id)
             }
             Edit::ApplyChatTimeline {
@@ -53,18 +74,24 @@ impl ProjectStore {
                 base,
                 operations,
                 folder_id,
-            } if operations
-                .iter()
-                .any(|op| matches!(op, chat_timeline::Operation::CutClipRange { .. })) =>
+            } if operations.iter().any(|op| {
+                matches!(
+                    op,
+                    chat_timeline::Operation::CutClipRange {
+                        disposition: CutDisposition::Library,
+                        ..
+                    }
+                )
+            }) =>
             {
                 let mut p = self.load()?;
-                chat_timeline::apply(&mut p, *job_id, base, operations.clone(), &mut removed)?;
+                chat_timeline::apply(&mut p, *job_id, base, operations.clone(), &mut to_save)?;
                 (p, *folder_id)
             }
             _ => return Ok(StagedCuts::default()),
         };
         let mut clips = Vec::new();
-        for range in removed {
+        for range in to_save {
             let clip = self.render_range(&snapshot, &range)?;
             clips.push((range, clip));
         }
@@ -121,7 +148,8 @@ impl ClipRange {
         project: &mut Project,
         scene_id: Uuid,
         revision: u32,
-        removed: &mut Vec<SourceRange>,
+        disposition: CutDisposition,
+        to_save: &mut Vec<SourceRange>,
     ) -> Result<Inverse, String> {
         let index = project.scene_index(scene_id)?;
         let before = project.scenes[index].settings.clone();
@@ -220,7 +248,9 @@ impl ClipRange {
             }
         }
         project.edit_scene(scene_id, revision, settings)?;
-        removed.push(excerpt);
+        if disposition == CutDisposition::Library {
+            to_save.push(excerpt);
+        }
         Ok(Inverse::Settings {
             id: scene_id,
             before,

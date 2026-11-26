@@ -27,6 +27,7 @@ mod package;
 mod render;
 mod scene_tools;
 mod source_work;
+mod split_clip;
 #[cfg(test)]
 mod tests;
 mod undo;
@@ -74,6 +75,12 @@ pub(crate) struct ProjectView {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum Edit {
+    SplitClip {
+        scene_id: Uuid,
+        expected: u32,
+        clip_id: Uuid,
+        at_ms: u64,
+    },
     SetBgm {
         expected: Vec<bgm::Clip>,
         clips: Vec<bgm::Clip>,
@@ -88,6 +95,8 @@ pub(crate) enum Edit {
         scene_id: Uuid,
         expected: u32,
         range: cut_range::ClipRange,
+        #[serde(default)]
+        disposition: cut_range::CutDisposition,
     },
     SaveGuidelineStyle {
         expected: u32,
@@ -322,6 +331,10 @@ impl ProjectStore {
     }
 
     fn edit(&self, edit: Edit) -> Result<ProjectView, String> {
+        self.edit_with_saved_cuts(edit).map(|(view, _)| view)
+    }
+
+    fn edit_with_saved_cuts(&self, edit: Edit) -> Result<(ProjectView, Vec<Uuid>), String> {
         let staged = self.stage_cut_sources(&edit)?;
         let mut history = self
             .history
@@ -329,10 +342,14 @@ impl ProjectStore {
             .map_err(|_| "편집 기록을 열 수 없습니다.")?;
         let undoing = matches!(edit, Edit::Undo { .. });
         let mut inverse = None;
+        let mut saved_cuts = Vec::new();
         let project = self.commit_files(|project, media, added, _retired| {
-            let mut removed = Vec::new();
+            let mut cuts_to_save = Vec::new();
             let previous_order = (!project.bgm.is_empty() && !undoing).then(|| undo::order(project));
             match edit {
+                Edit::SplitClip { scene_id, expected, clip_id, at_ms } => {
+                    inverse = Some(split_clip::apply(project, scene_id, expected, clip_id, at_ms)?);
+                }
                 Edit::SetBgm { expected, clips } => inverse = project.edit_bgm(expected, clips)?,
                 Edit::SceneTool {
                     scene_id,
@@ -345,9 +362,10 @@ impl ProjectStore {
                     scene_id,
                     expected,
                     range,
+                    disposition,
                     ..
                 } => {
-                    inverse = Some(range.apply(project, scene_id, expected, &mut removed)?);
+                    inverse = Some(range.apply(project, scene_id, expected, disposition, &mut cuts_to_save)?);
                 }
                 Edit::SaveGuidelineStyle { expected, style } => {
                     inverse = project.save_style(expected, style)?
@@ -364,7 +382,7 @@ impl ProjectStore {
                     ..
                 } => {
                     inverse =
-                        chat_timeline::apply(project, job_id, &base, operations, &mut removed)?;
+                        chat_timeline::apply(project, job_id, &base, operations, &mut cuts_to_save)?;
                 }
                 Edit::Undo { token } => history.apply(token, project)?,
                 Edit::Rename { title } => {
@@ -494,8 +512,8 @@ impl ProjectStore {
                         .name = name.into();
                 }
             }
-            if !removed.is_empty() {
-                staged.publish(&removed, project, media, added)?;
+            if !cuts_to_save.is_empty() {
+                saved_cuts = staged.publish(&cuts_to_save, project, media, added)?;
             }
             if let Some(change) = previous_order.and_then(|order| project.reconcile_bgm(&order)) {
                 inverse = Some(match inverse.take() {
@@ -511,7 +529,7 @@ impl ProjectStore {
         if let Some(entry) = inverse {
             history.push(entry);
         }
-        Ok(self.view_with_undo(project, history.target()))
+        Ok((self.view_with_undo(project, history.target()), saved_cuts))
     }
 
 

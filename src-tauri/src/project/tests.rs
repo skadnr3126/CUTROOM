@@ -136,6 +136,61 @@ fn middle_cut_fixture(store: &ProjectStore) -> (Project, uuid::Uuid, uuid::Uuid,
 }
 
 #[test]
+fn splitting_a_clip_keeps_its_frames_and_duration_on_both_tracks() {
+    use serde_json::json;
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (baseline, scene, _, overlay) = middle_cut_fixture(&store);
+    let split = |expected, clip_id, at_ms| {
+        store.edit(serde_json::from_value(json!({
+            "type":"splitClip","sceneId":scene,"expected":expected,"clipId":clip_id,"atMs":at_ms
+        })).unwrap())
+    };
+    assert!(split(0, scene, 200).is_err()); // At the start of the visible source, within the padded clip.
+    let view = split(0, scene, 1000).unwrap();
+    let pieces = &view.project.scenes[0].settings.clips;
+    assert_eq!((pieces[0].id, pieces[0].duration_ms, pieces[1].duration_ms), (scene, 1000, 3000));
+    assert_ne!(pieces[0].id, pieces[1].id);
+    assert_eq!(pieces[0].visual.trim.unwrap().out_ms, 1300);
+    assert_eq!((pieces[1].visual.source.in_ms, pieces[1].visual.trim.unwrap().offset_ms), (1300, 0));
+    assert!(split(0, overlay, 400).is_err());
+    let layers = split(1, overlay, 400).unwrap();
+    let settings = &layers.project.scenes[0].settings;
+    let [left, right] = &settings.overlays[..] else { panic!("expected both overlay pieces") };
+    assert_eq!((left.id, left.start_ms, left.duration_ms), (overlay, 300, 400));
+    assert_eq!((right.start_ms, right.in_ms, right.duration_ms), (700, 2900, 1600));
+    assert_eq!(right.track, left.track);
+    assert!(left.sound && right.sound);
+    assert_eq!(settings.duration_ms, baseline.scenes[0].settings.duration_ms);
+    assert_eq!(layers.project.assets.len(), baseline.assets.len());
+    let undo = |view: super::ProjectView| {
+        store.edit(serde_json::from_value(json!({"type":"undo","token":json!(view.undo.unwrap())["token"]})).unwrap()).unwrap()
+    };
+    let restored = undo(undo(layers));
+    assert!(restored.project.scenes[0].settings == baseline.scenes[0].settings);
+}
+
+#[test]
+fn splitting_an_image_preserves_its_display_time() {
+    use serde_json::json;
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let id = uuid::Uuid::new_v4();
+    let asset = uuid::Uuid::new_v4();
+    store.mutate(|p, _, _| {
+        p.assets.push(serde_json::from_value(json!({"id":asset,"kind":"image","name":"image","extension":"png","hasAudio":false})).unwrap());
+        p.scenes.push(serde_json::from_value(json!({"id":id,"revision":0,"text":"","caption":"자막",
+            "durationMs":2500,"visual":{"assetId":asset,"inMs":0},"audio":null})).unwrap());
+        Ok(())
+    }).unwrap();
+    let view = store.edit(serde_json::from_value(json!({"type":"splitClip","sceneId":id,"expected":0,"clipId":id,"atMs":1000})).unwrap()).unwrap();
+    let settings = &view.project.scenes[0].settings;
+    assert_eq!(settings.duration_ms, 2500);
+    assert_eq!((settings.clips[0].duration_ms, settings.clips[1].duration_ms), (1000, 1500));
+    assert!(settings.clips[0].visual == settings.clips[1].visual);
+}
+
+#[test]
 fn timed_caption_track_roundtrips_across_clips_chat_and_undo() {
     use serde_json::json;
     use uuid::Uuid;
@@ -226,6 +281,7 @@ fn caption_and_duplicate_share_the_manual_and_chat_edit_paths() {
 
 #[test]
 fn cut_resolves_source_times_and_missing_media_keeps_the_original_edit() {
+    use super::cut_range::CutDisposition;
     use serde_json::json;
     let dir = tempdir().unwrap();
     let store = ProjectStore::new(dir.path().into());
@@ -243,10 +299,12 @@ fn cut_resolves_source_times_and_missing_media_keeps_the_original_edit() {
     assert!(store.history.lock().unwrap().target().is_none());
     let mut removed = Vec::new();
     let main: super::cut_range::ClipRange = serde_json::from_value(range).unwrap();
-    main.apply(&mut baseline, scene, 0, &mut removed).unwrap();
+    main.apply(&mut baseline, scene, 0, CutDisposition::Library, &mut removed)
+        .unwrap();
     let layer: super::cut_range::ClipRange =
         serde_json::from_value(json!({"clipId":overlay,"startMs":400,"endMs":1200})).unwrap();
-    layer.apply(&mut baseline, scene, 1, &mut removed).unwrap();
+    layer.apply(&mut baseline, scene, 1, CutDisposition::Library, &mut removed)
+        .unwrap();
     assert_eq!(
         removed
             .iter()
@@ -254,6 +312,45 @@ fn cut_resolves_source_times_and_missing_media_keeps_the_original_edit() {
             .collect::<Vec<_>>(),
         vec![(video, 1300, 2800), (video, 2900, 3700)]
     );
+}
+
+#[test]
+fn cut_discard_only_edits_the_timeline_even_when_source_media_is_offline() {
+    use serde_json::json;
+    use uuid::Uuid;
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (baseline, scene, video, overlay) = middle_cut_fixture(&store);
+    let file = baseline.asset(video).unwrap().path_in(&store.media_dir());
+    assert!(!file.exists());
+    let cut = |clip, expected, start, end, folder| json!({
+        "type":"cutClipRange", "disposition":"discard", "folderId":folder,
+        "sceneId":scene, "expected":expected, "range":{"clipId":clip,"startMs":start,"endMs":end}
+    });
+    let edit = |v| store.edit_with_saved_cuts(serde_json::from_value(v).unwrap());
+    assert!(edit(cut(scene, 0, 1000, 2500, Some(Uuid::new_v4()))).is_err());
+    assert!(edit(cut(scene, 0, 1000, 3999, None)).is_err());
+    let (view, saved) = edit(cut(scene, 0, 1000, 2500, None)).unwrap();
+    assert!(saved.is_empty());
+    let settings = &view.project.scenes[0].settings;
+    assert_eq!(settings.duration_ms, 2500);
+    assert_eq!(settings.clips.len(), 2);
+    assert_eq!(settings.clips[0].visual.trim.unwrap().out_ms, 1300);
+    assert_eq!(settings.clips[1].visual.source.in_ms, 2800);
+    assert!(settings.overlays == baseline.scenes[0].settings.overlays);
+    assert!(edit(cut(overlay, 0, 400, 1200, None)).is_err());
+    let (layer, saved) = edit(cut(overlay, 1, 400, 1200, None)).unwrap();
+    assert!(saved.is_empty());
+    let layers = &layer.project.scenes[0].settings.overlays;
+    assert_eq!(layers.len(), 2);
+    assert_eq!((layers[0].start_ms, layers[0].duration_ms), (300, 400));
+    assert_eq!((layers[1].start_ms, layers[1].in_ms), (700, 3700));
+    assert_eq!(layer.project.assets.len(), 1);
+    assert_eq!(fs::read_dir(store.media_dir()).unwrap().count(), 0);
+    for undo in [layer.undo.unwrap(), view.undo.unwrap()] {
+        edit(json!({"type":"undo","token":json!(undo)["token"]})).unwrap();
+    }
+    assert!(store.load().unwrap().scenes[0].settings == baseline.scenes[0].settings);
 }
 
 #[test]
@@ -309,8 +406,11 @@ fn middle_cut_uses_clip_time_on_both_tracks_and_undo_restores_the_scene() {
     let manual = |start, end| json!({"type":"cutClipRange","folderId":folder,"sceneId":scene,"expected":0,"range":range(scene,start,end)});
     assert!(edit(manual(100, 1500)).is_err());
     assert!(edit(manual(2000, 500)).is_err());
-    let result = edit(manual(1000, 2500)).unwrap();
+    let (result, saved_ids) = store
+        .edit_with_saved_cuts(serde_json::from_value(manual(1000, 2500)).unwrap())
+        .unwrap();
     let saved = &result.project.assets[1];
+    assert_eq!(saved_ids, [saved.id]);
     assert_eq!(saved.name, "shot (1.300–2.800초).mp4");
     assert_eq!(saved.folder_id, Some(folder));
     assert!(saved.has_audio && !saved.removed_from_bin);
@@ -332,7 +432,8 @@ fn middle_cut_uses_clip_time_on_both_tracks_and_undo_restores_the_scene() {
     assert!(restored.project.asset(saved.id).is_ok());
     let job = json!({"type":"applyChatTimeline","jobId":Uuid::new_v4(),
         "base":[{"id":scene,"revision":restored.project.scenes[0].revision}],
-        "operations":[{"type":"cutClipRange","sceneId":scene,"range":range(overlay,400,1200)}]});
+        "operations":[{"type":"cutClipRange","sceneId":scene,"range":range(scene,1000,2500),"disposition":"discard"},
+                      {"type":"cutClipRange","sceneId":scene,"range":range(overlay,400,1200),"disposition":"library"}]});
     let result = edit(job.clone()).unwrap();
     let layer_asset = &result.project.assets[2];
     assert_eq!(layer_asset.name, "shot (2.900–3.700초).mp4");

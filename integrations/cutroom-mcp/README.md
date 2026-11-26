@@ -31,6 +31,8 @@ codex mcp add cutroom -- (Get-Command node.exe).Source (Resolve-Path integration
 
 ## 편집 흐름
 
+“이 클립을 3초에서 둘로 나눠 줘”는 `split_clip`, “이 클립의 3~5초를 잘라서 보관함에 저장해 줘”는 `cut_clip_range`의 `library` 옵션으로 처리합니다. 그 부분을 타임라인에서만 덜어내려면 `discard`를 사용합니다. 두 명령 모두 `timeline`에서 프로젝트 ID를, `scene`에서 현재 리비전과 클립 ID를 먼저 읽습니다. 시간은 선택한 클립의 시작 기준입니다. 보관함에 저장한 범위의 소스 ID는 `savedAssetId`로 확인할 수 있습니다.
+
 “마지막 구간 이름을 ‘마무리’로 바꿔 줘”, “평딜 구간을 전투 분석 바로 앞으로 옮겨 줘”처럼 요청할 수 있습니다. `rename_scene`은 `timeline`에서 읽은 구간 ID와 리비전, 새 이름을 받습니다. `move_scene`은 이동할 구간 ID와 기준 구간 ID(`targetId`)를 받아 `after: false`이면 바로 앞에, `true`이면 바로 뒤에 배치합니다. 두 작업 모두 컷룸에서 실행 취소할 수 있습니다.
 
 1. `timeline`으로 구간을 찾고 `scene`으로 저장된 자막과 리비전을 읽습니다.

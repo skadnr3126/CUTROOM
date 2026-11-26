@@ -110,7 +110,7 @@ impl RenderedClip {
         media: &Path,
         added: &mut Vec<PathBuf>,
         folder: Option<Uuid>,
-    ) -> Result<(), String> {
+    ) -> Result<Uuid, String> {
         project.require_folder(folder)?;
         self.asset.folder_id = folder;
         super::generated::publish(
@@ -119,8 +119,7 @@ impl RenderedClip {
             added,
             self.asset,
             super::generated::Input::Staged(self.file),
-        )?;
-        Ok(())
+        )
     }
 }
 
@@ -200,8 +199,9 @@ impl ProjectStore {
             },
         )?;
         let asset_id = clip.asset.id;
-        let view =
-            self.mutate(|project, media, added| clip.insert(project, media, added, folder_id))?;
+        let view = self.mutate(|project, media, added| {
+            clip.insert(project, media, added, folder_id).map(|_| ())
+        })?;
         Ok(RenderedSource { view, asset_id })
     }
 

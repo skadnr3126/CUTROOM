@@ -67,11 +67,16 @@ type View = { mediaExtensions: string[]; project: Project; mediaDir: string; exp
 export type NewAssRow = { templateLine: number; text: string };
 export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[]; additions?: NewAssRow[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
 
+export type CutDisposition = "discard" | "library";
+export type ClipEdit =
+  | { type: "splitClip"; clipId: string; atMs: number }
+  | { type: "cutClipRange"; disposition: CutDisposition; range: { clipId: string; startMs: number; endMs: number }; folderId?: string | null };
+
 export type Edit =
   | { type: "setBgm"; expected: BgmClip[]; clips: BgmClip[] }
   | { type: "sceneTool"; sceneId: string; expected: number; tool: SceneTool }
   | FolderEdit
-  | { type: "cutClipRange"; folderId: string | null; sceneId: string; expected: number; range: { clipId: string; startMs: number; endMs: number } }
+  | (ClipEdit & { sceneId: string; expected: number })
   | { type: "undo"; token: string }
   | { type: "renameSource"; id: string; name: string }
   | { type: "removeSource"; id: string }
@@ -196,7 +201,7 @@ export function useProject() {
 
 
   async function edit(edit: Edit) {
-    const label = edit.type === "cutClipRange" ? "잘라낸 영상 저장 중"
+    const label = edit.type === "cutClipRange" && edit.disposition === "library" ? "잘라낸 영상 저장 중"
       : edit.type === "sceneTool" ? (edit.tool.type === "duplicateClip" ? "클립 복제 중" : "자막 저장 중")
       : "프로젝트 저장 중";
     const result = await run(label, () => invoke<View>("project_edit", { edit }));
