@@ -172,6 +172,110 @@ fn add_ass_rows_inherits_design_and_time_and_survives_independent_edits() {
     );
 }
 
+fn add_rows_to_template(source: &str, index: usize, texts: &[&str]) -> String {
+    let template_line = ass_rows(source.into()).unwrap()[index].line;
+    let additions = texts
+        .iter()
+        .map(|text| super::ass::NewRow {
+            template_line,
+            text: (*text).into(),
+        })
+        .collect();
+    ass_update(source.into(), vec![], 120_000, Some(additions)).unwrap()
+}
+
+#[test]
+fn add_ass_row_reuses_the_neighboring_second_line_position() {
+    let header = SOURCE
+        .split_once("Dialogue:")
+        .unwrap()
+        .0
+        .replace("1280", "1920")
+        .replace("720", "1080")
+        .replace("Malgun Gothic,52", "Noto Sans KR,71.5");
+    let events = r#"Dialogue: 1,0:01:26.30,0:01:30.80,Caption,,0,0,0,,{\fscx102\fscy102\pos(960,956)}앞 자막 첫 줄
+Dialogue: 1,0:01:26.30,0:01:30.80,Caption,,0,0,0,,{\fscx102\fscy102\pos(960,1014)}앞 자막 둘째 줄
+Dialogue: 0,0:01:30.80,0:01:35.80,Panel,,0,0,0,,{\an7\pos(120,920)\p1}m 0 0 l 1680 0 1680 135 0 135
+Dialogue: 1,0:01:30.80,0:01:35.80,Caption,,0,0,0,,{\fscx102\fscy102\pos(960,956)}극딜 안정성 또한 떨어집니다.\N
+"#;
+    let source = header + events;
+    let saved = add_rows_to_template(&source, 2, &["추가한 둘째 줄"]);
+    let expected = r"Dialogue: 1,0:01:30.80,0:01:35.80,Caption,,0,0,0,,{\fscx102\fscy102\pos(960,1014)}추가한 둘째 줄";
+    assert_eq!(saved, format!("{source}{expected}\n"));
+}
+
+#[test]
+fn add_ass_row_ignores_trailing_line_breaks_when_estimating_space() {
+    let add_below = |body: &str| {
+        let source = SOURCE.replace(r"처음,\N둘째 줄", body);
+        let result = add_rows_to_template(&source, 0, &["새 줄"]);
+        result.lines().last().unwrap().to_owned()
+    };
+    assert_eq!(add_below("한 줄"), add_below(r"한 줄\N"));
+    assert_ne!(add_below("한 줄"), add_below(r"내용\N둘째 줄"));
+}
+
+#[test]
+fn add_ass_rows_near_the_bottom_keeps_the_stack_in_reading_order_on_screen() {
+    let source = SOURCE
+        .replace(r"처음,\N둘째 줄", "원래 줄")
+        .replace(r"\pos(600,550)", r"\pos(600,700)");
+    let result = add_rows_to_template(&source, 0, &["추가 A", "추가 B"]);
+    let rows = ass_rows(result.clone()).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["원래 줄", "추가 A", "추가 B"]
+    );
+    let y: Vec<f64> = rows
+        .iter()
+        .map(|row| {
+            let line = result.lines().nth(row.line).unwrap();
+            let (_, coords) = line.split_once(r"\pos(600,").unwrap();
+            coords.split_once(')').unwrap().0.parse().unwrap()
+        })
+        .collect();
+    assert!(y[0] < y[1] && y[1] < y[2], "{y:?}");
+    // With center alignment even the outer rows need half a font's height inside the frame.
+    assert!(y[0] >= 26.0 && y[2] <= 720.0 - 26.0, "{y:?}");
+}
+
+#[test]
+fn add_ass_row_ignores_other_columns_and_unrelated_single_row_cues() {
+    let source = SOURCE
+        .replace(r"처음,\N둘째 줄", "기준")
+        .replace(r"\fad(100,150)", "");
+    let unrelated = r"Dialogue: 1,0:00:02.00,0:00:03.00,Caption,,0,0,0,,{\pos(200,550)}다른 열 첫 줄
+Dialogue: 1,0:00:02.00,0:00:03.00,Caption,,0,0,0,,{\pos(200,580)}다른 열 둘째 줄
+Dialogue: 1,0:00:03.00,0:00:04.00,Caption,,0,0,0,,{\pos(600,550)}따로 쓰인 줄
+Dialogue: 1,0:00:04.00,0:00:05.00,Caption,,0,0,0,,{\pos(600,580)}다른 시각의 줄
+";
+    let baseline = add_rows_to_template(&source, 0, &["추가"]);
+    let saved = add_rows_to_template(&(source + unrelated), 0, &["추가"]);
+    assert_eq!(saved, baseline + unrelated);
+}
+
+#[test]
+fn adding_between_reopened_rows_matches_the_editor_order_on_screen() {
+    let source = SOURCE
+        .replace(r"처음,\N둘째 줄", "첫 줄")
+        .replace("600,550", "600,350");
+    let pair = add_rows_to_template(&source, 0, &["마지막 줄"]);
+    let three = add_rows_to_template(&pair, 0, &["가운데 줄"]);
+    let position = |source: &str, text: &str| -> f64 {
+        let line = source.lines().find(|l| l.ends_with(text)).unwrap();
+        line.split_once(r"\pos(600,")
+            .unwrap()
+            .1
+            .split_once(')')
+            .unwrap()
+            .0
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(position(&three, "가운데 줄"), position(&pair, "마지막 줄"));
+    assert!(position(&three, "마지막 줄") > position(&three, "가운데 줄"));
+}
+
 #[test]
 fn clearing_one_ass_row_preserves_its_sibling_and_shared_panel() {
     let sibling = "Dialogue: 2,0:00:00.50,0:00:01.70,Caption,,0,0,0,,{\\pos(600,620)}아래 줄";

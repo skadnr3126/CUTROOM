@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+mod flow_rows;
 mod new_rows;
 pub(crate) use new_rows::NewRow;
 
@@ -169,7 +170,7 @@ impl AssTrack {
 
 #[tauri::command]
 pub(crate) fn ass_rows(source: String) -> Result<Vec<Row>, String> {
-    Ok(events(&source)?
+    let mut rows: Vec<_> = events(&source)?
         .into_iter()
         .filter(|e| !e.drawing)
         .map(|e| Row {
@@ -178,7 +179,9 @@ pub(crate) fn ass_rows(source: String) -> Result<Vec<Row>, String> {
             end_ms: e.to,
             text: e.body.replace("\\N", "\n"),
         })
-        .collect())
+        .collect();
+    flow_rows::editor_order(&source, &mut rows);
+    Ok(rows)
 }
 
 // Edit by physical line, so overlapping layers, duplicate text and arbitrary event order retain identity.
@@ -409,7 +412,10 @@ pub(super) fn insert(source: &str, at: u64, duration: u64, text: &str) -> Result
         rewrite(template, from, to, &format!("{}{body}", template.prefix))
     };
     // Place each clone next to its template, honoring changes of Format inside the file.
-    let mut additions = vec![(template.line, new_line)];
+    let insert_after = flow_rows::groups(source)
+        .find(|group| group.contains(&template.line))
+        .map_or(template.line, |group| *group.end());
+    let mut additions = vec![(insert_after, new_line)];
     if !parsed
         .iter()
         .any(|p| p.panel && p.from <= from && to <= p.to)
