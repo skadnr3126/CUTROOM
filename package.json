@@ -4,6 +4,7 @@
   "version": "0.1.7",
   "type": "module",
   "scripts": {
+    "predev": "node integrations/ffmpeg/build.mjs --dev",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

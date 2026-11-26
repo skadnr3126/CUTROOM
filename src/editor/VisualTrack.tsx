@@ -11,6 +11,7 @@ type Props = {
   track: number; fresh: boolean; clips: TrackClip[]; selected: string | null; sceneId: string;
   scale: number; viewport: { left: number; right: number }; assets: Map<string, Asset>; mediaDir: string;
   busy: boolean; measured: Record<string, number>;
+  draggingVisual: boolean; onClipDrag: (assetId: string | null) => void;
   select: (clip: TrackClip, at: number) => void; remove: (clip: TrackClip) => void;
   save: (clip: TrackClip, x: number, y: number) => void;
   resize: (clip: TrackClip, edge: "start" | "end", delta: number, commit: boolean) => void;
@@ -18,7 +19,7 @@ type Props = {
   drop: (track: number, at: number, item: Asset | TrackClip, target?: string, after?: boolean) => void;
 };
 
-export function VisualTrack({ track, fresh, clips, selected, sceneId, scale, viewport, assets, mediaDir, busy, measured, select, remove, save, resize, cancel, drop }: Props) {
+export function VisualTrack({ track, fresh, clips, selected, sceneId, scale, viewport, assets, mediaDir, busy, draggingVisual, onClipDrag, measured, select, remove, save, resize, cancel, drop }: Props) {
   const [hover, setHover] = useState(false);
   function receive(e: DragEvent<HTMLDivElement>) {
     setHover(false);
@@ -33,10 +34,10 @@ export function VisualTrack({ track, fresh, clips, selected, sceneId, scale, vie
     drop(track, Math.max(0, at - (moving ? Number(grip) || 0 : 0)), (asset ?? moving)!, target?.id,
       !!target && at >= target.startMs + target.durationMs / 2);
   }
-  return <div className={"track-row visual" + (hover ? " drop-target" : "")} data-track={track} onDrop={receive}
+  return <div className={"track-row visual" + (hover && draggingVisual ? " drop-target" : "")} data-track={track} data-new-track={fresh} onDrop={receive}
     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setHover(false); }}
     onDragOver={e => {
-      if (!busy && [sourceDragType, clipDrag].some(t => e.dataTransfer.types.includes(t))) {
+      if (draggingVisual && [sourceDragType, clipDrag].some(t => e.dataTransfer.types.includes(t))) {
         e.preventDefault(); e.dataTransfer.dropEffect = e.dataTransfer.types.includes(clipDrag) ? "move" : "copy"; setHover(true);
       }
     }}>
@@ -52,7 +53,12 @@ export function VisualTrack({ track, fresh, clips, selected, sceneId, scale, vie
         onContextMenu={e => { e.preventDefault(); if (!busy) { select(c, c.startMs); save(c, e.clientX, e.clientY); } }}>
         <button className={"clip filled" + (selected === c.id ? " picked active" : "")} aria-label={asset.name} title={asset.name}
           aria-pressed={selected === c.id} aria-keyshortcuts="Delete" draggable={!busy}
-          onDragStart={e => { e.dataTransfer.setData(clipDrag, [sceneId, c.id, (e.clientX - e.currentTarget.getBoundingClientRect().left) / scale].join("|")); e.dataTransfer.effectAllowed = "move"; }}
+          onDragStart={e => {
+            e.dataTransfer.setData(clipDrag, [sceneId, c.id, (e.clientX - e.currentTarget.getBoundingClientRect().left) / scale].join("|"));
+            e.dataTransfer.effectAllowed = "move";
+            onClipDrag(asset.id);
+          }}
+          onDragEnd={() => onClipDrag(null)}
           onClick={e => select(c, c.startMs + (video ? range.offsetMs : 0) + (e.detail ? Math.min(c.durationMs - 1, Math.max(0, Math.round((e.clientX - e.currentTarget.getBoundingClientRect().left) / scale))) : 0))}
           onKeyDown={e => { if (e.key === "Delete" && !busy && !e.repeat) { e.preventDefault(); remove(c); } }}>
           {video ? <Filmstrip assetId={asset.id} inMs={range.inMs} outMs={range.outMs} pixelsPerMs={scale}

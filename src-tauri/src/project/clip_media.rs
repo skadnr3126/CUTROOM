@@ -8,6 +8,89 @@ use super::{
     model::{Asset, Kind, Project},
 };
 
+const CPU_H264: &[&str] = &[
+    "-c:v",
+    "libx264",
+    "-threads:v",
+    "2",
+    "-pix_fmt",
+    "yuv420p",
+    "-preset",
+    "veryfast",
+    "-crf",
+    "18",
+];
+
+#[cfg(windows)]
+fn hardware_h264(ffmpeg: &Path) -> Option<&'static [&'static str]> {
+    use std::sync::Mutex;
+
+    type Options = &'static [&'static str];
+    static CACHE: Mutex<Option<(PathBuf, Option<Options>)>> = Mutex::new(None);
+    const CANDIDATES: &[Options] = &[
+        &[
+            "-c:v",
+            "h264_nvenc",
+            "-pix_fmt",
+            "nv12",
+            "-preset",
+            "p5",
+            "-rc",
+            "vbr",
+            "-cq",
+            "19",
+            "-b:v",
+            "0",
+        ],
+        &[
+            "-c:v", "h264_amf", "-pix_fmt", "nv12", "-quality", "quality", "-rc", "cqp", "-qp_i",
+            "24", "-qp_p", "26", "-qp_b", "27",
+        ],
+        &[
+            "-c:v",
+            "h264_qsv",
+            "-pix_fmt",
+            "nv12",
+            "-preset",
+            "medium",
+            "-global_quality",
+            "19",
+        ],
+    ];
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, options)) = cache.as_ref()
+        && path == ffmpeg
+    {
+        return *options;
+    }
+    // An encoder can be compiled into FFmpeg even when the device/driver cannot use it.
+    let options = CANDIDATES.iter().copied().find(|options| {
+        media_command(ffmpeg)
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=s=320x240:r=30",
+                "-frames:v",
+                "2",
+            ])
+            .args(*options)
+            .args(["-f", "null", "-"])
+            .output()
+            .is_ok_and(|result| result.status.success())
+    });
+    *cache = Some((ffmpeg.to_owned(), options));
+    options
+}
+
+#[cfg(not(windows))]
+fn hardware_h264(_: &Path) -> Option<&'static [&'static str]> {
+    None
+}
+
 #[derive(PartialEq, Eq, Debug)]
 pub(super) struct SourceRange {
     pub asset_id: Uuid,
@@ -146,52 +229,57 @@ impl ProjectStore {
             .suffix(".mp4")
             .tempfile_in(self.media_dir())
             .map_err(|_| "임시 영상 파일을 만들 수 없습니다.")?;
-        let result = media_command(&ffmpeg)
-            .args([
-                "-nostdin",
-                "-y",
-                "-v",
-                "error",
-                "-protocol_whitelist",
-                "file,pipe",
-                "-ss",
-                &seconds(start),
-                "-i",
-            ])
-            .arg(asset.path_in(&self.media_dir()))
-            .args([
-                "-t",
-                &seconds(end - start),
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a:0?",
-                "-vf",
-                "pad=ceil(iw/2)*2:ceil(ih/2)*2",
-                "-c:v",
-                "libx264",
-                "-threads:v",
-                "2",
-                "-filter_threads",
-                "1",
-                "-pix_fmt",
-                "yuv420p",
-                "-preset",
-                "veryfast",
-                "-crf",
-                "18",
-                "-c:a",
-                "aac",
-                "-movflags",
-                "+faststart",
-            ])
-            .arg(output.path())
-            .output()
-            .map_err(|_| "FFmpeg를 시작할 수 없습니다.")?;
-        if !result.status.success() {
-            return Err("선택한 구간을 MP4로 저장할 수 없습니다.".into());
-        }
-        let mut saved = inspect_asset(output.path(), &name, probe.as_deref())?;
+        let input_path = asset.path_in(&self.media_dir());
+        let encode = |options: &[&str]| -> Result<Asset, String> {
+            let result = media_command(&ffmpeg)
+                .args([
+                    "-nostdin",
+                    "-y",
+                    "-v",
+                    "error",
+                    "-protocol_whitelist",
+                    "file,pipe",
+                    "-ss",
+                    &seconds(start),
+                    "-i",
+                ])
+                .arg(&input_path)
+                .args([
+                    "-t",
+                    &seconds(end - start),
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a:0?",
+                    "-vf",
+                    "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+                    "-filter_threads",
+                    "1",
+                ])
+                .args(options)
+                .args(["-c:a", "aac", "-movflags", "+faststart"])
+                .arg(output.path())
+                .output()
+                .map_err(|_| "FFmpeg를 시작할 수 없습니다.")?;
+            if !result.status.success() {
+                return Err("선택한 구간을 MP4로 저장할 수 없습니다.".into());
+            }
+            inspect_asset(output.path(), &name, probe.as_deref())
+        };
+        let accelerated = probe
+            .as_ref()
+            .and_then(|_| hardware_h264(&ffmpeg))
+            .and_then(|options| encode(options).ok())
+            .filter(|saved| {
+                saved
+                    .duration_ms
+                    .is_some_and(|ms| ms > 0 && ms.abs_diff(end - start) <= 100)
+                    && (!asset.has_audio || saved.has_audio)
+            });
+        let mut saved = match accelerated {
+            Some(saved) => saved,
+            None => encode(CPU_H264)?,
+        };
         saved.duration_ms = saved.duration_ms.or(Some(end - start));
         if probe.is_none() {
             saved.has_audio = asset.has_audio;

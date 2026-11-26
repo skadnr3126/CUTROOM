@@ -20,6 +20,8 @@ import { SourceBin } from "./SourceBin";
 import { StageLayout } from "./EditorLayout";
 import type { SceneRename } from "./SceneTitleInput";
 import { TimelineOverview } from "./TimelineOverview";
+import { TimelineRuler } from "./TimelineRuler";
+import { useTimelineZoom } from "./useTimelineZoom";
 import { ClipMenu, type MenuAction } from "./ClipMenu";
 import { sourceTime, videoRange } from "./videoTrim";
 
@@ -115,8 +117,6 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const playbackStart = scope === "detail" ? selectedStart : 0;
   const playbackEnd = scope === "detail" ? section?.end ?? 0 : duration;
   const requestedPosition = useRef<{ id: string; time: number } | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const pixelsPerMs = 0.08 * zoom;
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [picked, setPicked] = useState<{ sceneId: string; track: Track } | null>(null);
@@ -125,22 +125,12 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const byId = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
   const binAssets = useMemo(() => project.assets.filter((asset) => !asset.removedFromBin), [project.assets]);
   const [menu, setMenu] = useState<MenuAction | null>(null);
-  const timelineScroll = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (timelineScroll.current) timelineScroll.current.scrollLeft = 0;
-  }, [scene?.id]);
-  const [viewport, setViewport] = useState({ left: 0, right: 0 });
-  useEffect(() => {
-    const element = timelineScroll.current;
-    if (!element) return;
-    const measure = () => setViewport({ left: element.scrollLeft, right: element.scrollLeft + element.clientWidth - 63 });
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    element.addEventListener("scroll", measure, { passive: true });
-    return () => { observer.disconnect(); element.removeEventListener("scroll", measure); };
-  }, [scope]);
+  const labelWidth = scope === "detail" ? 63 : 0;
+  const scopeDuration = playbackEnd - playbackStart;
+  const zoom = useTimelineZoom(scope, scopeDuration, position - playbackStart, labelWidth);
+  const { pixelsPerMs, viewport, scrollRef } = zoom;
   const dragAsset = dragId ? byId.get(dragId) : undefined;
+  const draggingVisual = !busy && !!dragAsset && dragAsset.kind !== "audio";
   const [measured, setMeasured] = useState<Record<string, number>>({});
 
   function clipRange(target: TimelinePiece) {
@@ -161,6 +151,18 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     requestedPosition.current = null;
     seek(request && request.id === scene?.id ? request.time : selectedStart);
   }, [scene?.id, selectedStart, selectionVersion]);
+
+  // Returning to a zoomed timeline should reveal the selected edit point.
+  const detailSceneId = scope === "detail" ? scene?.id : undefined;
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const x = Math.max(0, positionRef.current - playbackStart) * pixelsPerMs;
+    const width = scroller.clientWidth - labelWidth;
+    if (x < scroller.scrollLeft || x >= scroller.scrollLeft + width) {
+      scroller.scrollLeft = Math.max(0, x - width / 2);
+    }
+  }, [scope, detailSceneId, selectionVersion]);
 
   function selectOverview(id: string, at: number) {
     requestedPosition.current = id === scene?.id ? null : { id, time: at };
@@ -353,9 +355,8 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     { label: "음성", glyph: "♪", className: "audio", labelFor: (scene: TimelinePiece) => byId.get(scene.audio?.assetId ?? "")?.name ||
       (!scene.visual?.muted && byId.get(scene.visual?.assetId ?? "")?.hasAudio ? "원본 소리" : undefined) },
   ] as const;
-  const rulerEnd = Math.max(6000,(section?.durationMs ?? 0)+2000);
-  const tickMs = Math.max(1000, Math.ceil(rulerEnd / 120_000) * 1000);
-  const ticks = Array.from({ length: Math.ceil(rulerEnd / tickMs) }, (_, i) => i * tickMs);
+  const trackWidth = scopeDuration * pixelsPerMs + (zoom.isFit ? 0 : Math.min(160, 2000 * pixelsPerMs));
+  const scaleText = `${Number((pixelsPerMs * 1000).toPrecision(3))}px/초`;
 
   return (
     <>
@@ -487,28 +488,34 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               {([-1,1] as const).map(d=><button key={d} className="button compact" disabled={busy || !peers[index+d]}
                 aria-label={d<0 ? "클립을 앞으로 이동" : "클립을 뒤로 이동"} onClick={() => void dropItem(selected.track,0,selected,peers[index+d].id,d>0)}>{d<0 ? "←" : "→"}</button>)}
             </>}
-            <select aria-label="상세 타임라인 배율" value={zoom} onChange={(event) => setZoom(Number(event.target.value))}>
-              {[0.5, 1, 2, 4].map((value) => <option key={value} value={value}>{value}×</option>)}</select>
           </div>}
+          <div className="timeline-zoom" role="group" aria-label="타임라인 확대 및 축소">
+            <button type="button" className="button compact" disabled={!scopeDuration || zoom.sliderValue <= 0}
+              aria-label="타임라인 축소" title="타임라인 축소" onClick={() => zoom.setSliderValue(Math.max(0, zoom.sliderValue - 5))}>−</button>
+            <input type="range" min={0} max={100} step={0.25} value={zoom.sliderValue} disabled={!scopeDuration}
+              aria-label="타임라인 가로 배율" aria-valuetext={scaleText} title={scaleText}
+              onChange={event => zoom.setSliderValue(event.target.valueAsNumber)} />
+            <button type="button" className="button compact" disabled={!scopeDuration || zoom.sliderValue >= 100}
+              aria-label="타임라인 확대" title="타임라인 확대" onClick={() => zoom.setSliderValue(Math.min(100, zoom.sliderValue + 5))}>＋</button>
+            <button type="button" className="button compact" disabled={!scopeDuration} aria-pressed={zoom.isFit}
+              onClick={zoom.fit}>화면에 맞춤</button>
+          </div>
         </header>
         {scope === "all" ? <TimelineOverview sections={sections} assets={byId} mediaDir={mediaDir} selectedId={scene?.id}
+          pixelsPerMs={pixelsPerMs} viewport={viewport} scrollRef={scrollRef} onSeek={scrubSection}
           time={time} playing={playing} busy={busy} dragAsset={dragAsset} select={selectOverview} onImport={onImport}
+          onOpenDetail={(id, at) => { selectOverview(id, at); setScope("detail"); }}
           onRemove={onRemoveScene} rename={sceneRename} onMenu={setMenu} onMove={onMoveScene}
           add={(id, asset) => { onChangePlacement(id, mediaTrack(asset), asset.id); finishDrag(); }} /> :
-        <div className="timeline-scroll" ref={timelineScroll}>
-          <div className="timeline-grid" style={{ minWidth: 63 + rulerEnd * pixelsPerMs }}>
-            <div className="track-labels"><span className="ruler-label">시간</span>{section && [newTrack,...lanes].map((n,i)=><span className="visual-track-label" key={n} aria-label={i ? "트랙 "+(n+1) : "새 트랙"}><b>{i ? "▤" : "＋"}</b>{i ? "V"+(n+1) : "트랙"}</span>)}<span className="captions-track-label"><b>CC</b>자막</span>{tracks.map((track) => <span className={track.className+"-track-label"} key={track.label}><b>{track.glyph}</b>{track.label}</span>)}</div>
+        <div className="timeline-scroll" ref={scrollRef}>
+          <div className="timeline-grid" data-dragging-visual={draggingVisual} style={{ minWidth: labelWidth + trackWidth }}>
+            <div className="track-labels"><span className="ruler-label">시간</span>{section && [newTrack,...lanes].map((n,i)=><span className="visual-track-label" data-new-track={n === newTrack} key={n} aria-label={i ? "트랙 "+(n+1) : "새 트랙"}><b>{i ? "▤" : "＋"}</b>{i ? "V"+(n+1) : "트랙"}</span>)}<span className="captions-track-label"><b>CC</b>자막</span>{tracks.map((track) => <span className={track.className+"-track-label"} key={track.label}><b>{track.glyph}</b>{track.label}</span>)}</div>
             <div className="track-content">
-              <div className="timeline-scale">
-                {ticks.map((tick) => <span key={tick} style={{ left: tick * pixelsPerMs }}>{timelineTime(tick)}</span>)}
-                {section && <input className="ruler-seek" type="range" min={0} max={section.durationMs} step={1}
-                  style={{ width: section.durationMs * pixelsPerMs }} value={Math.round(time - selectedStart)}
-                  aria-label="상세 타임라인 재생바" aria-valuetext={sourceTime(time - selectedStart)}
-                  onChange={event => scrubSection(event.target.valueAsNumber)} />}
-              </div>
+              <TimelineRuler pixelsPerMs={pixelsPerMs} viewport={viewport} duration={scopeDuration} time={time - playbackStart}
+                onSeek={scrubSection} label="상세 타임라인 재생바" />
               {section && [newTrack,...lanes].map(n => <VisualTrack key={n} track={n} fresh={n === newTrack} clips={items}
                 selected={clipId} sceneId={section.scene.id} assets={byId} mediaDir={mediaDir} scale={pixelsPerMs} viewport={viewport}
-                busy={busy} measured={measured} select={selectItem} remove={c => changeItems(removeClip(items,c))}
+                busy={busy} draggingVisual={draggingVisual} onClipDrag={setDragId} measured={measured} select={selectItem} remove={c => changeItems(removeClip(items,c))}
                 cancel={() => setDraft(null)} drop={dropItem}
                 save={(c,x,y) => setMenu({x,y,items:[
                   ...(byId.get(c.assetId)?.kind === "video" ? [{label:"클립을 소스 보관함에 추가",run:()=>onSaveClip(section.scene.id,section.scene.revision,c.id)}] : []),

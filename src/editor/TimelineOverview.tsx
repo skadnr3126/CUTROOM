@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { SceneTitleInput, type SceneRename } from "./SceneTitleInput";
 import { Filmstrip } from "./Filmstrip";
+import { TimelineRuler } from "./TimelineRuler";
 import { useReorderDrag } from "./useReorderDrag";
 import { sceneLabel, sourceDragType, sourceUrl, type Asset, type Scene } from "./project";
 import type { MenuAction } from "./ClipMenu";
@@ -13,11 +14,16 @@ type Props = {
   assets: Map<string, Asset>;
   mediaDir: string;
   selectedId?: string;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  pixelsPerMs: number;
+  viewport: { left: number; right: number };
+  onSeek: (ms: number) => void;
   time: number;
   playing: boolean;
   busy: boolean;
   dragAsset?: Asset;
   select: (id: string, time: number) => void;
+  onOpenDetail: (id: string, time: number) => void;
   add: (sceneId: string, asset: Asset) => void;
   onImport: () => void;
   rename: SceneRename;
@@ -26,51 +32,39 @@ type Props = {
   onMenu: (menu: MenuAction) => void;
 };
 
-export function TimelineOverview({ sections, assets, mediaDir, selectedId, time, playing, busy, dragAsset, select, add, onImport, onRemove, rename, onMenu, onMove }: Props) {
-  const scroll = useRef<HTMLDivElement>(null);
-  const [viewport, setViewport] = useState({ width: 0, left: 0 });
+export function TimelineOverview({ sections, assets, mediaDir, selectedId, scrollRef, pixelsPerMs, viewport, onSeek, time, playing, busy, dragAsset, select, onOpenDetail, add, onImport, onRemove, rename, onMenu, onMove }: Props) {
   const [picker, setPicker] = useState<string | null>(null);
   const reorder = useReorderDrag("application/x-cutroom-scene", "overview", sections.map(entry => entry.scene.id), busy, onMove);
   const activePicker = sections.find((entry) => entry.scene.id === picker && picker === selectedId);
-  useEffect(() => {
-    const node = scroll.current!;
-    const measure = () => setViewport({ width: node.clientWidth, left: node.scrollLeft });
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    node.addEventListener("scroll", measure, { passive: true });
-    return () => { observer.disconnect(); node.removeEventListener("scroll", measure); };
-  }, []);
   const duration = sections[sections.length - 1]?.end ?? 0;
   const sectionClips = sections.map(entry => visualClips(entry.scene));
   const lanes = trackNumbers(sectionClips.flat());
-  let x = 0;
-  let head = 0;
-  const columns = sections.map((entry) => {
-    const width = Math.max(118, viewport.width * entry.durationMs / duration);
-    const left = x;
-    x += width;
-    if (time >= entry.start && time <= entry.end) head = left + width * (time - entry.start) / entry.durationMs;
-    return { entry, width, left };
-  });
+  const head = time * pixelsPerMs;
   useEffect(() => {
-    const node = scroll.current;
+    const node = scrollRef.current;
     if (playing && node && (head < node.scrollLeft || head >= node.scrollLeft + node.clientWidth)) {
       node.scrollLeft = Math.max(0, head - node.clientWidth * 0.15);
     }
-  }, [head, playing]);
+  }, [head, playing, scrollRef]);
 
   return <div className="overview-body">
-    <div className="overview-scroll" ref={scroll}>
+    <div className="overview-scroll" ref={scrollRef}>
       {duration === 0 ? <p className="overview-empty">대본에서 구간을 추가하면 여기에 표시됩니다.</p> :
-        <div className="overview-strip" style={{ width: x }}>
-          {columns.map(({ entry, width, left }) => {
+        <div className="overview-strip" style={{ width: duration * pixelsPerMs }}>
+          <TimelineRuler pixelsPerMs={pixelsPerMs} viewport={viewport} duration={duration} time={time} onSeek={onSeek} label="전체 타임라인 재생바" />
+          <div className="overview-sections">
+          {sections.map(entry => {
             const id = entry.scene.id;
             const label = sceneLabel(entry.scene, entry.index);
             const editingName = rename.active?.id === id && rename.active.surface === "timeline";
-            const scale = width / entry.durationMs;
-            return <div className="overview-section" key={id} style={{ width }} data-selected={id === selectedId} {...reorder(id)} draggable={!editingName && !busy && sections.length > 1}
+            const width = entry.durationMs * pixelsPerMs;
+            return <div className="overview-section" key={id} style={{ width, marginLeft: entry.start * pixelsPerMs }} data-selected={id === selectedId} {...reorder(id)} draggable={!editingName && !busy && sections.length > 1}
               role="group" aria-label={label} aria-keyshortcuts="Delete"
+              onDoubleClick={(event) => {
+                if ((event.target as Element).closest("input, .overview-add")) return;
+                const at = id === selectedId && time >= entry.start && time < entry.end ? time : entry.start;
+                onOpenDetail(id, at);
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 if (busy) return;
@@ -99,7 +93,6 @@ export function TimelineOverview({ sections, assets, mediaDir, selectedId, time,
                   select(id, id === selectedId ? time : entry.start);
                   rename.start(entry.scene, "timeline");
                 }}
-                onDoubleClick={() => { if (!busy) rename.start(entry.scene, "timeline"); }}
                 onClick={() => { setPicker(null); select(id, entry.start); }}>
                 <strong title={label}>{label}</strong><small>{sourceTime(entry.start)}–{sourceTime(entry.end)}</small>
               </button>}
@@ -112,21 +105,22 @@ export function TimelineOverview({ sections, assets, mediaDir, selectedId, time,
                   const bounds = videoRange(clip,clip.durationMs,asset.durationMs);
                   const begin = clip.startMs+bounds.offsetMs;
                   const length = asset.kind === "video" ? bounds.outMs-bounds.inMs : clip.durationMs;
-                  const filmLeft = left + begin*scale;
-                  return <button className="overview-clip" key={clip.id} style={{left:begin*scale,width:length*scale}}
+                  const filmLeft = (entry.start + begin) * pixelsPerMs;
+                  return <button className="overview-clip" key={clip.id} style={{left:begin*pixelsPerMs,width:length*pixelsPerMs}}
                     aria-label={`${label} · ${asset.name}`} title={asset.name} onClick={event => {
-                      const offset = event.detail ? Math.max(0,(event.clientX-event.currentTarget.getBoundingClientRect().left)/scale) : 0;
+                      const offset = event.detail ? Math.max(0,(event.clientX-event.currentTarget.getBoundingClientRect().left)/pixelsPerMs) : 0;
                       select(id,entry.start+Math.min(endOf(clip)-1,begin+Math.floor(offset))); setPicker(null);
                     }}>
                     {asset.kind === "image" ? <img src={sourceUrl(mediaDir,asset)} alt="" draggable={false}/> :
-                      <Filmstrip assetId={asset.id} inMs={bounds.inMs} outMs={bounds.outMs} pixelsPerMs={scale}
-                        visibleFrom={viewport.left-filmLeft} visibleTo={viewport.left+viewport.width-filmLeft}/>}
+                      <Filmstrip assetId={asset.id} inMs={bounds.inMs} outMs={bounds.outMs} pixelsPerMs={pixelsPerMs}
+                        visibleFrom={viewport.left-filmLeft} visibleTo={viewport.right-filmLeft}/>}
                   </button>;
                 })}
               </div>)}
             </div>;
           })}
-          <i className="overview-head" aria-hidden="true" style={{ left: Math.max(0, head - 1) }} />
+          </div>
+          <i className="overview-head" aria-hidden="true" style={{ left: Math.max(0, Math.min(duration * pixelsPerMs - 2, head - 1)) }} />
         </div>}
     </div>
     {activePicker && <div className="overview-picker" role="group" aria-label={`${sceneLabel(activePicker.scene, activePicker.index)} 소스 선택`}>

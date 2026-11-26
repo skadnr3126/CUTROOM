@@ -82,31 +82,39 @@ pub(super) fn export_styled(
     }
     fs::write(work.join("segments.txt"), concat)
         .map_err(|_| "렌더링 구간을 정리할 수 없습니다.")?;
-    run(media_command(ffmpeg).current_dir(work).args([
-        "-nostdin",
-        "-v",
-        "error",
-        "-f",
-        "concat",
-        "-safe",
-        "1",
-        "-i",
-        "segments.txt",
-        "-c",
-        "copy",
-        "-movflags",
-        "+faststart",
-        "export.mp4",
-    ]))?;
+    join_segments(ffmpeg, work, destination)
+}
+
+fn join_segments(ffmpeg: &Path, work: &Path, destination: &Path) -> Result<(), String> {
     let parent = destination
         .parent()
         .ok_or("내보내기 경로를 확인해 주세요.")?;
-    let mut result =
+    let result =
         NamedTempFile::new_in(parent).map_err(|_| "선택한 위치에 영상을 저장할 수 없습니다.")?;
-    let mut input =
-        fs::File::open(work.join("export.mp4")).map_err(|_| "렌더링한 영상을 열 수 없습니다.")?;
-    io::copy(&mut input, &mut result)
-        .and_then(|_| result.as_file().sync_all())
+    run(media_command(ffmpeg)
+        .current_dir(work)
+        .args([
+            "-nostdin",
+            "-y",
+            "-v",
+            "error",
+            "-f",
+            "concat",
+            "-safe",
+            "1",
+            "-i",
+            "segments.txt",
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            "-f",
+            "mp4",
+        ])
+        .arg(result.path()))?;
+    result
+        .as_file()
+        .sync_all()
         .map_err(|_| "선택한 위치에 영상을 저장할 수 없습니다.")?;
     result.persist_noclobber(destination).map_err(|error| {
         if error.error.kind() == io::ErrorKind::AlreadyExists {
@@ -116,6 +124,37 @@ pub(super) fn export_styled(
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "Requires CUTROOM_TEST_TOOLS with FFmpeg"]
+fn join_segments_preserves_existing_files_and_cleans_up_failed_exports() {
+    let ffmpeg = PathBuf::from(env::var_os("CUTROOM_TEST_TOOLS").unwrap())
+        .join(format!("ffmpeg{}", env::consts::EXE_SUFFIX));
+    let work = tempdir().unwrap();
+    let folder = tempdir().unwrap();
+    let destination = folder.path().join("export.mp4");
+    fs::write(&destination, b"existing file").unwrap();
+    run(media_command(&ffmpeg).current_dir(work.path()).args([
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=s=32x32:d=0.1",
+        "part.mp4",
+    ]))
+    .unwrap();
+    let manifest = work.path().join("segments.txt");
+    fs::write(&manifest, "file 'part.mp4'\n").unwrap();
+    let error = join_segments(&ffmpeg, work.path(), &destination).unwrap_err();
+    assert!(error.contains("같은 이름의 파일"));
+    assert_eq!(fs::read(&destination).unwrap(), b"existing file");
+
+    fs::write(manifest, "file 'missing.mp4'\n").unwrap();
+    assert!(join_segments(&ffmpeg, work.path(), &folder.path().join("new.mp4")).is_err());
+    assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
 }
 
 fn render_scene(
