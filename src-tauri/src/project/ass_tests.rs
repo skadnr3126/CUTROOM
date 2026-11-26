@@ -95,6 +95,105 @@ fn deleting_timeline_caption_is_undoable_and_empty_ass_reuses_its_design() {
 }
 
 #[test]
+fn add_ass_rows_inherits_design_and_time_and_survives_independent_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = ProjectStore::new(temp.path().into());
+    let view = store
+        .mutate(|p, _, _| {
+            p.add_scene("줄 추가".into());
+            Ok(())
+        })
+        .unwrap();
+    let id = view.project.scenes[0].id;
+    let edit = |expected, tool| {
+        store.edit(
+            serde_json::from_value(json!({
+                "type":"sceneTool","sceneId":id,"expected":expected,"tool":tool
+            }))
+            .unwrap(),
+        )
+    };
+    let source = SOURCE.to_owned()
+        + "Dialogue: 1,0:00:00.50,0:00:01.70,Caption,,0,0,0,,{\\pos(600,620)}나머지\n";
+    edit(
+        0,
+        json!({"type":"setAssTrack","name":"자막.ass","source":source}),
+    )
+    .unwrap();
+    let mut rows = ass_rows(source.clone()).unwrap();
+    let template = rows[0].line;
+    rows[0].start_ms = 600;
+    rows[1].text = "수정한 다른 줄".into();
+    let added = edit(
+        1,
+        json!({"type":"editAssRows","edits":rows,"additions":[
+        {"templateLine":template,"text":"추가 A"},{"templateLine":template,"text":"추가 B"}]}),
+    )
+    .unwrap();
+    let saved = added.project.scenes[0]
+        .settings
+        .caption_ass
+        .as_ref()
+        .unwrap();
+    let records = ass_rows(saved.source.clone()).unwrap();
+    assert_eq!(
+        records.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+        ["처음,\n둘째 줄", "추가 A", "추가 B", "수정한 다른 줄"]
+    );
+    assert_eq!((records[1].start_ms, records[1].end_ms), (600, 1700));
+    let first = saved.source.lines().nth(records[1].line).unwrap();
+    let second = saved.source.lines().nth(records[2].line).unwrap();
+    assert!(first.contains(r"\fad(100,150)") && !first.contains(r"\pos(600,550)"));
+    assert_ne!(first.split('}').next(), second.split('}').next());
+    let mut removed = records[1].clone();
+    removed.text.clear();
+    let updated = ass_update(saved.source.clone(), vec![removed], 4000, None).unwrap();
+    assert!(
+        !updated.contains("추가 A")
+            && updated.contains("추가 B")
+            && updated.contains("수정한 다른 줄")
+    );
+    let restored = store
+        .edit(
+            serde_json::from_value(
+                json!({"type":"undo","token":json!(added.undo.unwrap())["token"]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        restored.project.scenes[0]
+            .settings
+            .caption_ass
+            .as_ref()
+            .unwrap()
+            .source,
+        source
+    );
+}
+
+#[test]
+fn clearing_one_ass_row_preserves_its_sibling_and_shared_panel() {
+    let sibling = "Dialogue: 2,0:00:00.50,0:00:01.70,Caption,,0,0,0,,{\\pos(600,620)}아래 줄";
+    let later = "Dialogue: 1,0:00:02.00,0:00:03.00,Caption,,0,0,0,,다음 자막";
+    let source = format!("{SOURCE}{sibling}\n{later}\n").replace('\n', "\r\n");
+    let original = ass_rows(source.clone()).unwrap();
+    for index in [0, 1] {
+        let mut erase = original[index].clone();
+        erase.text.clear();
+        let updated = ass_update(source.clone(), vec![erase], 4000, None).unwrap();
+        let remaining = ass_rows(updated.clone()).unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].text, original[1 - index].text);
+        assert_eq!((remaining[0].start_ms, remaining[0].end_ms), (500, 1700));
+        let kept_line = source.lines().nth(original[1 - index].line).unwrap();
+        assert!(updated.contains(kept_line) && updated.contains(later));
+        assert!(updated.contains("0:00:00.50,0:00:01.70,Panel"));
+        assert!(updated.ends_with("\r\n"));
+    }
+}
+
+#[test]
 fn deleting_middle_caption_opens_gap_in_shared_panel() {
     let source = SOURCE
         .replace("0:00:01.70,Panel", "0:00:04.00,Panel")
@@ -226,7 +325,8 @@ fn ass_edit_preserves_design_roundtrip_and_undo() {
                 end_ms: 1000,
                 text: "x".into()
             }],
-            4000
+            4000,
+            None
         )
         .is_err()
     );
@@ -241,6 +341,43 @@ fn ass_edit_preserves_design_roundtrip_and_undo() {
             .source,
         SOURCE
     );
+}
+
+#[test]
+#[ignore = "Requires CUTROOM_TEST_TOOLS with FFmpeg"]
+fn added_positioned_row_renders_in_a_separate_visible_band() {
+    let ff = std::path::PathBuf::from(std::env::var_os("CUTROOM_TEST_TOOLS").unwrap())
+        .join(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+    let template = ass_rows(SOURCE.into()).unwrap().remove(0);
+    let added =
+        serde_json::from_value(json!({"templateLine":template.line,"text":"추가한 자막"})).unwrap();
+    let result = ass_update(SOURCE.into(), vec![], 4000, Some(vec![added])).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let bands = |source: &str| {
+        let png = temp.path().join("row.png");
+        std::fs::write(&png, super::ass_preview::sheet(&ff, source, 30, 1).unwrap()).unwrap();
+        let raw = std::process::Command::new(&ff)
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
+            .output()
+            .unwrap();
+        assert_eq!(raw.stdout.len(), 1280 * 720 * 4);
+        raw.stdout
+            .chunks_exact(1280 * 4)
+            .map(|row| row.chunks_exact(4).any(|p| p.iter().all(|c| *c > 180)))
+            .collect::<Vec<_>>()
+    };
+    let rows = ass_rows(result.clone()).unwrap();
+    let isolated = |i: usize| {
+        let mut remove = rows[i].clone();
+        remove.text.clear();
+        bands(&ass_update(result.clone(), vec![remove], 4000, None).unwrap())
+    };
+    let top = isolated(1);
+    let bottom = isolated(0);
+    assert!(top.iter().any(|v| *v) && bottom.iter().any(|v| *v));
+    assert!(top.iter().zip(bottom).all(|(a, b)| !(*a && b)));
 }
 
 #[test]

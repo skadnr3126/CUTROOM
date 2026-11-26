@@ -1,17 +1,19 @@
 import { emit } from "@tauri-apps/api/event";
 import { openSession, type EditorSeek } from "./projectSession";
 import { useCutroomEvent } from "./useCutroomEvent";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { sceneLabel, mediaTrack, type SceneSettings, type SceneTool, sourceDragType, sourceUrl, timelineTime, videoDuration, type Asset, type MediaTrack, type Project, type Scene } from "./project";
 import { CaptionTrack } from "./CaptionTrack";
 import { AssCaptionTrack } from "./AssCaptionTrack";
 import { sceneCaptions, captionAt, type CaptionDraft } from "./captionCues";
 import { AddCaptionDialog } from "./AddCaptionDialog";
 import { AssEditor, useAssRows } from "./AssEditor";
+import { adjacentCaptionStarts, useCaptionStarts } from "./useCaptionStarts";
 import { AssPreview } from "./AssPreview";
 import { AssFileButton } from "./AssFileButton";
 import { CaptionEditor } from "./CaptionEditor";
 import { VisualTrack } from "./VisualTrack";
+import { NeighborPreviewTrack } from "./NeighborPreviewTrack";
 import { CutRangeControls } from "./CutRangeControls";
 import { visualClips, trackSettings, trackNumbers, canSplit, splitClip, resizeClip, removeClip, placeClip, endOf, fullFrame, type TrackClip } from "./visualTracks";
 import { timelineSections, type TimelinePiece } from "./timeline";
@@ -33,13 +35,15 @@ function frameStyle(frame = fullFrame) {
 
 type Track = MediaTrack | "captions";
 
+const transitionSideMs = 2000;
+const previewRates = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
 type Props = {
   onBgmChange: (clips: BgmClip[]) => void;
   initialSeek?: EditorSeek;
   folderControls: FolderControls;
   recordingTrack: MediaStreamTrack | null;
-  onSceneTool: (scene: Scene, tool: SceneTool) => Promise<boolean>;
+  onSceneTool: (scene: Scene, tool: SceneTool) => Promise<number|null>;
   onVisualChange: (scene: Scene, settings: SceneSettings) => Promise<void>;
   onCutRange: (scene: Scene, clipId: string, startMs: number, endMs: number) => void;
   captureControls: import("react").ReactNode;
@@ -67,6 +71,7 @@ type Props = {
 
 export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool, onVisualChange, onCutRange, captureControls, project, onBgmChange, mediaDir, scene, selectionVersion, source, mode, onMode, onChooseScene, onChooseSource, onImport, onLink, onChangePlacement, onSaveClip, onRenameSource, onRelinkSource, onRemoveSource, onRemoveScene, onMoveScene, sceneRename, busy }: Props) {
   const [watchRecording, setWatchRecording] = useState(true);
+  const sourceMedia = useRef<HTMLMediaElement | null>(null);
   useEffect(() => { setWatchRecording(true); }, [recordingTrack]);
   const liveTrack = watchRecording ? recordingTrack : null;
   const [clipId, setClipId] = useState<string | null>(null);
@@ -117,8 +122,16 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     if (placed && next !== items) { changeItems(next); selectItem(placed,placed.startMs); }
   }
   const [scope, setScope] = useState<"all" | "detail">("all");
-  const playbackStart = scope === "detail" ? selectedStart : 0;
-  const playbackEnd = scope === "detail" ? section?.end ?? 0 : duration;
+  const [showTransitions, setShowTransitions] = useState(false);
+  const [previewRate, setPreviewRate] = useState(1);
+  const [boundaryRun, setBoundaryRun] = useState<{ end: number } | null>(null);
+  const timelineStart = scope === "detail" ? selectedStart : 0;
+  const timelineEnd = scope === "detail" ? section?.end ?? 0 : duration;
+  const previous = section && sections[section.index - 1];
+  const following = section && sections[section.index + 1];
+  const transitionMode = scope === "detail" && showTransitions && !!section;
+  const playbackStart = transitionMode && previous ? Math.max(previous.start, selectedStart - transitionSideMs) : timelineStart;
+  const playbackEnd = transitionMode && following ? Math.min(following.end, timelineEnd + transitionSideMs) : timelineEnd;
   const requestedPosition = useRef<{ id: string; time: number } | null>(null);
   const [position, setPosition] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -130,8 +143,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const [menu, setMenu] = useState<MenuAction | null>(null);
   const labelWidth = scope === "detail" ? 63 : 0;
   const scopeDuration = playbackEnd - playbackStart;
-  const zoom = useTimelineZoom(scope, scopeDuration, position - playbackStart, labelWidth);
+  const zoom = useTimelineZoom(scope, scopeDuration, Math.max(0, Math.min(scopeDuration, position - playbackStart)), labelWidth);
   const { pixelsPerMs, viewport, scrollRef } = zoom;
+  const leadingWidth = (timelineStart - playbackStart) * pixelsPerMs;
+  const followingLeft = (timelineEnd - playbackStart) * pixelsPerMs;
+  const editViewport = { left: viewport.left - leadingWidth, right: viewport.right - leadingWidth };
   const dragAsset = dragId ? byId.get(dragId) : undefined;
   const draggingVisual = !busy && !!dragAsset && dragAsset.kind !== "audio";
   const [measured, setMeasured] = useState<Record<string, number>>({});
@@ -157,17 +173,19 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
 
   // Returning to a zoomed timeline should reveal the selected edit point.
   const detailSceneId = scope === "detail" ? scene?.id : undefined;
-  useEffect(() => {
+  function revealTime(absoluteMs: number) {
     const scroller = scrollRef.current;
     if (!scroller) return;
-    const x = Math.max(0, positionRef.current - playbackStart) * pixelsPerMs;
+    const x = Math.max(0, absoluteMs - playbackStart) * pixelsPerMs;
     const width = scroller.clientWidth - labelWidth;
     if (x < scroller.scrollLeft || x >= scroller.scrollLeft + width) {
       scroller.scrollLeft = Math.max(0, x - width / 2);
     }
-  }, [scope, detailSceneId, selectionVersion]);
+  }
+  useEffect(() => { revealTime(positionRef.current); }, [scope, detailSceneId, selectionVersion, transitionMode]);
 
   function selectOverview(id: string, at: number) {
+    setWatchRecording(false);
     requestedPosition.current = id === scene?.id ? null : { id, time: at };
     setPlaying(false);
     setPicked(null);
@@ -200,6 +218,23 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     if (next === "detail" && section && (position < section.start || position >= section.end)) seek(section.start);
   }
 
+  function toggleTransitions() {
+    setPlaying(false);
+    setBoundaryRun(null);
+    if (showTransitions) seek(Math.max(timelineStart, Math.min(positionRef.current, timelineEnd)));
+    setShowTransitions(!showTransitions);
+  }
+
+  function playBoundary(edge: "start" | "end") {
+    if (!section) return;
+    const before = edge === "start";
+    seek(before ? playbackStart : Math.max(section.start, section.end - transitionSideMs));
+    setBoundaryRun({ end: before ? Math.min(section.end, section.start + transitionSideMs) : playbackEnd });
+    setWatchRecording(false);
+    onMode("timeline");
+    setPlaying(true);
+  }
+
   function goToSection(offset: number) {
     const target = section && sections[section.index + offset];
     if (!target) return;
@@ -215,24 +250,33 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     const started = performance.now();
     let frame = 0;
     const tick = (now: number) => {
-      const next = Math.min(playbackEnd, initial + now - started);
+      const end = boundaryRun ? Math.min(boundaryRun.end - 1, playbackEnd) : playbackEnd;
+      const next = Math.min(end, initial + (now - started) * previewRate);
       seek(next);
-      if (next < playbackEnd) frame = requestAnimationFrame(tick);
+      if (next < end) frame = requestAnimationFrame(tick);
       else setPlaying(false);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playbackEnd, mode, playing]);
+  }, [playbackEnd, mode, playing, previewRate, boundaryRun]);
 
   const time = Math.max(playbackStart, Math.min(position, playbackEnd));
   const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({clip, start:anchorTime(clip.start,sections), end:anchorTime(clip.end,sections)})), [project.bgm,sections]);
-  const visibleSpans = scope === "detail" ? detail : spans;
-  const current = visibleSpans.find((span) => time < span.end) ?? visibleSpans[visibleSpans.length - 1];
+  const visibleSpans = scope === "detail" && !transitionMode ? detail : spans;
+  const current = visibleSpans.find((span) => Math.min(time, playbackEnd - 1) < span.end) ?? visibleSpans[visibleSpans.length - 1];
   const currentScene = current?.scene;
   const [assDraft, setAssDraft] = useState<{ scene: Scene; at: number; line?: number } | null>(null);
   const [assPreview, setAssPreview] = useState<string>("");
   const assTarget = assDraft && sections.find(s => s.scene.id === assDraft.scene.id);
-  const assRows = useAssRows(section?.scene.captionAss?.source);
+  const assRows = useAssRows(section?.scene.captionAss);
+  const captionStarts = useCaptionStarts(sections, playbackStart, playbackEnd);
+  const adjacent = adjacentCaptionStarts(captionStarts, time);
+  function jumpToCaption(target: number | undefined) {
+    if (target === undefined) return;
+    scrubTo(target);
+    revealTime(target);
+    scrollRef.current?.querySelector<HTMLInputElement>(".ruler-seek")?.focus({preventScroll:true});
+  }
   const activeAss = current?.owner.captionAss;
   function editAss(target: NonNullable<typeof section>, at: number, line?: number) {
     if (!target.scene.captionAss || busy) return;
@@ -246,6 +290,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const addTarget = addingCaption && sections.find(s => s.scene.id === addingCaption.scene.id);
   const captionTarget = captionDraft && sections.find(s => s.scene.id === captionDraft.sceneId);
   const playheadSection = current && sections[current.index];
+  const previewingNeighbor = transitionMode && playheadSection?.scene.id !== section?.scene.id;
   useCutroomEvent<string>("cutroom-selection-request", async nonce => {
     const binding = await openSession();
     const piece = picked && spans.find(entry => entry.scene.id === picked.sceneId);
@@ -281,13 +326,38 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     setCaptionDraft({ sceneId: target.scene.id, revision: target.scene.revision, ...entry });
   }
   function addAtPlayhead() {
-    if (playheadSection && time < playheadSection.end) openCaption(playheadSection, time - playheadSection.start);
+    if (!previewingNeighbor && playheadSection && time < playheadSection.end) openCaption(playheadSection, time - playheadSection.start);
   }
   useEffect(() => {
     function shortcut(event: KeyboardEvent) {
+      if (event.code === "Space") {
+        if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+            liveTrack || menu || document.querySelector("dialog[open]") || event.target instanceof Element &&
+            event.target.closest('textarea, select, input:not([type="range"]), [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], [role="menu"]')) return;
+        const media = sourceMedia.current;
+        if (mode === "source" ? !media : !duration) return;
+        // Native media controls handle Space on keyup when they have focus.
+        if (media && event.target === media) return;
+        event.preventDefault();
+        if (event.repeat) return;
+        if (media && mode === "source") {
+          if (media.paused) void media.play().catch(() => {});
+          else media.pause();
+        } else togglePlay();
+        return;
+      }
+      if (event.code === "KeyA" || event.code === "KeyD") {
+        if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
+            busy || liveTrack || mode !== "timeline" || menu || document.querySelector("dialog[open]") ||
+            event.target instanceof Element && event.target.closest('textarea, select, input:not([type="range"]), [contenteditable]:not([contenteditable="false"])')) return;
+        const targets = adjacentCaptionStarts(captionStarts, positionRef.current);
+        event.preventDefault();
+        jumpToCaption(event.code === "KeyA" ? targets.previous : targets.next);
+        return;
+      }
       if (event.key === "F2" && !event.defaultPrevented && !event.repeat && !event.isComposing &&
         !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey && !busy &&
-        !captionDraft && !assDraft && scope === "detail" && playheadSection && mode === "timeline" &&
+        !captionDraft && !assDraft && !previewingNeighbor && scope === "detail" && playheadSection && mode === "timeline" &&
         (event.target === document.body || event.target instanceof Element && event.target.matches(".ruler-seek, .transport input[type=range]"))) {
         const ms = time - playheadSection.start;
         if (playheadSection.scene.captionAss) {
@@ -307,7 +377,8 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     }
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
-  }, [playheadSection, time, busy, captionDraft, assDraft, addingCaption, assRows, scope, mode]);
+  }, [playheadSection, time, busy, captionDraft, assDraft, addingCaption, assRows, scope, mode, previewingNeighbor,
+    captionStarts, liveTrack, menu, pixelsPerMs, playbackStart, playbackEnd, playing, position, duration, onMode]);
   const hasPictureAbove = current?.owner.overlays?.some(c => {
     const t = Math.min(time-current.sectionStart,sections[current.index].durationMs-1);
     return t >= c.startMs && t < c.startMs+c.durationMs;
@@ -322,10 +393,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   function setFrame(patch: Partial<typeof frame>) {
     changeItems(items.map(c => c.id === selected?.id ? {...c, frame:{...frame,...patch}} : c));
   }
-  function scrubSection(offsetMs: number) {
+  function scrubTo(absoluteMs: number) {
+    setWatchRecording(false);
     setPlaying(false);
     onMode("timeline");
-    seek(playbackStart + offsetMs);
+    seek(absoluteMs);
+  }
+  function scrubSection(offsetMs: number) {
+    scrubTo(timelineStart + offsetMs);
   }
   const localTime = current ? Math.min(time - current.start, current.durationMs - 1) : 0;
   const visualPlacement = currentScene?.visual;
@@ -337,6 +412,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
 
   function togglePlay() {
     if (!duration) return;
+    setBoundaryRun(null);
     if (!playing && (position < playbackStart || position >= playbackEnd)) seek(playbackStart);
     setPlaying(!playing);
     onMode("timeline");
@@ -373,6 +449,10 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
         <section className="panel monitor" id="preview-pane" aria-labelledby="monitor-title">
           <header className="panel-header">
             <h2 id="monitor-title">미리보기</h2>
+            {!liveTrack && <select className="preview-rate" aria-label="미리보기 재생 속도" title="미리보기 재생 속도"
+              value={previewRate} onChange={e => setPreviewRate(Number(e.target.value))}>
+              {previewRates.map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+            </select>}
             <div className="segmented">
               <button aria-pressed={!liveTrack && mode === "timeline"} onClick={() => { setWatchRecording(false); onMode("timeline"); }}>편집본</button>
               <button aria-pressed={!liveTrack && mode === "source"} disabled={!source} onClick={() => { setWatchRecording(false); setPlaying(false); onMode("source"); }}>소스</button>
@@ -381,14 +461,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
           </header>
           <div className="monitor-body">
             {liveTrack ? <RecordingMonitor track={liveTrack} /> : mode === "source" && source ? (
-              <SourcePreview key={source.id} asset={source} mediaDir={mediaDir} />
+              <SourcePreview key={source.id} asset={source} mediaDir={mediaDir} rate={previewRate} media={sourceMedia} />
             ) : (
               <div className="picture composite-picture" aria-label="편집본 미리보기"><div className="composite-frame">
                 <div className="preview-layer" style={frameStyle(visualPlacement?.frame)}>
                 {visual?.kind === "video" ? (
                   <SyncedClip key={`${currentScene?.id}:${visual.id}`} kind="video" url={sourceUrl(mediaDir, visual)}
                     onDuration={visual.durationMs == null ? (ms) => setMeasured((current) => ({ ...current, [visual.id]: ms })) : undefined}
-                    time={clipTime / 1000} playing={playing} muted={!!audio || visualPlacement?.muted} />
+                    time={clipTime / 1000} playing={playing} rate={previewRate} muted={!!audio || visualPlacement?.muted} />
                 ) : visual?.kind === "image" ? (
                   <PreviewImage key={visual.id} url={sourceUrl(mediaDir, visual)} name={visual.name} />
                 ) : (
@@ -401,16 +481,16 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   const fadeIn = clip.fadeInMs ? Math.min(1,(time-start)/Math.min(end-start,clip.fadeInMs)) : 1;
                   const fadeOut = clip.fadeOutMs ? Math.min(1,(end-time)/Math.min(end-start,clip.fadeOutMs)) : 1;
                   return <SyncedClip key={clip.id+":"+asset.id} kind="audio" url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
-                    playing={playing} volume={clip.volume/100*fadeIn*fadeOut}/>;
+                    playing={playing} rate={previewRate} volume={clip.volume/100*fadeIn*fadeOut}/>;
                 })}
                 {audio && <SyncedClip key={`${current?.owner.id}:${audio.id}`} kind="audio" url={sourceUrl(mediaDir, audio)}
-                  time={(localTime + (current ? current.start - current.sectionStart : 0) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} />}
+                  time={(localTime + (current ? current.start - current.sectionStart : 0) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} rate={previewRate} />}
                 {current && (current.owner.overlays ?? []).map(layer => {
                   const at = Math.min(time - current.sectionStart, sections[current.index].durationMs - 1) - layer.startMs;
                   const asset = byId.get(layer.assetId);
                   if (!asset || at < 0 || at >= layer.durationMs) return null;
                   return <div className="preview-layer" key={layer.id} style={frameStyle(layer)}>
-                    {asset.kind === "video" ? <SyncedClip kind="video" url={sourceUrl(mediaDir, asset)} time={(at+layer.inMs)/1000} playing={playing} muted={!layer.sound || !!audio}
+                    {asset.kind === "video" ? <SyncedClip kind="video" url={sourceUrl(mediaDir, asset)} time={(at+layer.inMs)/1000} playing={playing} rate={previewRate} muted={!layer.sound || !!audio}
                       onDuration={asset.durationMs == null ? ms => setMeasured(old => ({...old,[asset.id]:ms})) : undefined} /> :
                       <PreviewImage url={sourceUrl(mediaDir, asset)} name={asset.name} />}
                   </div>;
@@ -422,7 +502,12 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
           </div>
           <footer className="transport" hidden={!!liveTrack}>
             <output className="timecode">{timelineTime(time - playbackStart)} <span>/ {timelineTime(playbackEnd - playbackStart)}</span></output>
-            <button className="round-play" disabled={!duration} onClick={togglePlay} aria-label={playing ? "타임라인 일시 정지" : "타임라인 재생"}>{playing ? "Ⅱ" : "▶"}</button>
+            {mode === "timeline" && <button className="button compact" disabled={busy || adjacent.previous === undefined}
+              title="이전 자막 시작 (A)" aria-label="이전 자막 시작" aria-keyshortcuts="A" onClick={() => jumpToCaption(adjacent.previous)}>◀ A</button>}
+            <button className="round-play" disabled={!duration} onClick={togglePlay} aria-keyshortcuts={mode==="timeline"?"Space":undefined}
+              title={mode==="timeline"?"재생 / 일시 정지 (Space)":"타임라인 재생"} aria-label={playing ? "타임라인 일시 정지" : "타임라인 재생"}>{playing ? "Ⅱ" : "▶"}</button>
+            {mode === "timeline" && <button className="button compact" disabled={busy || adjacent.next === undefined}
+              title="다음 자막 시작 (D)" aria-label="다음 자막 시작" aria-keyshortcuts="D" onClick={() => jumpToCaption(adjacent.next)}>D ▶</button>}
             <input
               type="range"
               min={0}
@@ -431,7 +516,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               value={time - playbackStart}
               aria-label="타임라인 재생 위치"
               disabled={!duration}
-              onChange={(event) => scrubSection(event.target.valueAsNumber)}
+              onChange={(event) => scrubTo(playbackStart + event.target.valueAsNumber)}
             />
           </footer>
         </section>
@@ -443,12 +528,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             <button aria-pressed={scope === "all"} onClick={() => switchScope("all")}>전체 보기</button>
             <button aria-pressed={scope === "detail"} disabled={!section} onClick={() => switchScope("detail")}>상세 보기</button>
           </div>
-          <button className="button compact" disabled={!playheadSection || time >= playheadSection.end || busy}
+          {scope === "detail" && (previous || following) && <button className="button compact transition-toggle"
+            aria-pressed={showTransitions} onClick={toggleTransitions}>이음새 미리보기</button>}
+          <button className="button compact" disabled={previewingNeighbor || !playheadSection || time >= playheadSection.end || busy}
             title="재생 위치에 자막 추가 (Ctrl+Alt+C). 기존 자막 중간에서는 그 위치부터 새 문구를 입력합니다."
             aria-keyshortcuts="Control+Alt+C" onClick={addAtPlayhead}>＋ 자막 추가</button>
-          {playheadSection && <AssFileButton scene={playheadSection.scene} busy={busy} save={onSceneTool}/>}
-          {playheadSection?.scene.captionAss && <button className="button compact" disabled={busy} onClick={()=>editAss(playheadSection,time-playheadSection.start)}>ASS 자막 편집</button>}
-          {playheadSection && !playheadSection.scene.captionAss && <button className="button compact" disabled={busy || !sceneCaptions(playheadSection.scene).length}
+          {playheadSection && <AssFileButton scene={playheadSection.scene} busy={busy || previewingNeighbor} save={async(s,t)=>(await onSceneTool(s,t))!==null}/>}
+          {playheadSection?.scene.captionAss && <button className="button compact" disabled={busy || previewingNeighbor} onClick={()=>editAss(playheadSection,time-playheadSection.start)}>ASS 자막 편집</button>}
+          {playheadSection && !playheadSection.scene.captionAss && <button className="button compact" disabled={busy || previewingNeighbor || !sceneCaptions(playheadSection.scene).length}
             onClick={() => {
               const cues = sceneCaptions(playheadSection.scene);
               const ms = time - playheadSection.start;
@@ -469,7 +556,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             }}>클립 복제</button>
             {scene && selected && byId.get(selected.assetId)?.kind === "video" &&
               <CutRangeControls key={scene.id + ":" + scene.revision + ":" + selected.id} clip={selected} playhead={at}
-                sourceMs={byId.get(selected.assetId)?.durationMs ?? measured[selected.assetId]} busy={busy}
+                sourceMs={byId.get(selected.assetId)?.durationMs ?? measured[selected.assetId]} busy={busy || previewingNeighbor}
                 pause={() => setPlaying(false)} cut={(start, end) => {
                   scrubSection(selected.startMs + start);
                   onCutRange(scene, selected.id, start, end);
@@ -478,7 +565,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               onClick={() => { if (selected) changeItems(removeClip(items,selected)); else if (scene) onChangePlacement(scene.id,"audio",null); }}>
               {picked?.track === "audio" && !selected ? "음성 연결 해제" : "클립 삭제"} <kbd>Delete</kbd></button>
             </div>
-            {source && source.kind !== "audio" && scene && <button className="button compact" disabled={busy}
+            {source && source.kind !== "audio" && scene && <button className="button compact" disabled={busy || previewingNeighbor}
               onClick={() => void dropItem(newTrack,at,source)}>선택 소스를 새 트랙에 추가</button>}
             {selected && <>
               <label>크기 <select aria-label="클립 크기" disabled={busy} value={frame.size} onChange={e => setFrame({size:Number(e.target.value)})}>
@@ -513,6 +600,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               onClick={zoom.fit}>화면에 맞춤</button>
           </div>
         </header>
+        {transitionMode && (previous || following) && <div className="transition-preview" role="group" aria-label="이음새 재생">
+          {previous && <button className="button compact" title={sceneLabel(previous.scene, previous.index)} onClick={() => playBoundary("start")}>▶ 앞 이음새</button>}
+          {following && <button className="button compact" title={sceneLabel(following.scene, following.index)} onClick={() => playBoundary("end")}>▶ 뒤 이음새</button>}
+          {playheadSection && <span className="panel-meta">미리보기 중 · {sceneLabel(playheadSection.scene, playheadSection.index)}</span>}
+        </div>}
         {scope === "all" ? <TimelineOverview sections={sections} assets={byId} mediaDir={mediaDir} selectedId={scene?.id}
           bgm={project.bgm ?? []} onBgmChange={clips => {setWatchRecording(false); onMode("timeline"); onBgmChange(clips);}}
           pixelsPerMs={pixelsPerMs} viewport={viewport} scrollRef={scrollRef} onSeek={scrubSection}
@@ -525,9 +617,13 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             <div className="track-labels"><span className="ruler-label">시간</span>{section && [newTrack,...lanes].map((n,i)=><span className="visual-track-label" data-new-track={n === newTrack} key={n} aria-label={i ? "트랙 "+(n+1) : "새 트랙"}><b>{i ? "▤" : "＋"}</b>{i ? "V"+(n+1) : "트랙"}</span>)}<span className="captions-track-label"><b>CC</b>자막</span>{tracks.map((track) => <span className={track.className+"-track-label"} key={track.label}><b>{track.glyph}</b>{track.label}</span>)}</div>
             <div className="track-content">
               <TimelineRuler pixelsPerMs={pixelsPerMs} viewport={viewport} duration={scopeDuration} time={time - playbackStart}
-                onSeek={scrubSection} label="상세 타임라인 재생바" />
+                onSeek={ms => scrubTo(playbackStart + ms)} label="상세 타임라인 재생바" />
+              <div className="detail-track-bands">
+              {transitionMode && previous && <NeighborPreviewTrack side="앞" section={previous} start={playbackStart} end={selectedStart}
+                time={time} scale={pixelsPerMs} assets={byId} mediaDir={mediaDir} viewport={viewport} seek={scrubTo} />}
+              <div className="detail-edit-tracks" style={transitionMode && (previous || following) ? { flex: "none", width: (timelineEnd - timelineStart) * pixelsPerMs } : undefined}>
               {section && [newTrack,...lanes].map(n => <VisualTrack key={n} track={n} fresh={n === newTrack} clips={items}
-                selected={clipId} sceneId={section.scene.id} assets={byId} mediaDir={mediaDir} scale={pixelsPerMs} viewport={viewport}
+                selected={clipId} sceneId={section.scene.id} assets={byId} mediaDir={mediaDir} scale={pixelsPerMs} viewport={editViewport}
                 busy={busy} draggingVisual={draggingVisual} onClipDrag={setDragId} measured={measured} select={selectItem} remove={c => changeItems(removeClip(items,c))}
                 cancel={() => setDraft(null)} drop={dropItem}
                 save={(c,x,y) => setMenu({x,y,items:[
@@ -571,23 +667,28 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                       } }}>{label || "–"}</button></div>;
                 })}
               </div>)}
-              {section && time >= section.start && time <= section.end && <div className="play-line" style={{ left: Math.max(0, time - selectedStart) * pixelsPerMs }} aria-hidden="true" />}
+              </div>
+              {transitionMode && following && <NeighborPreviewTrack side="뒤" section={following} start={timelineEnd} end={playbackEnd}
+                time={time} scale={pixelsPerMs} assets={byId} mediaDir={mediaDir}
+                viewport={{ left: viewport.left - followingLeft, right: viewport.right - followingLeft }} seek={scrubTo} />}
+              </div>
+              {section && <div className="play-line" style={{ left: (time - playbackStart) * pixelsPerMs }} aria-hidden="true" />}
               {!duration && <p className="timeline-hint">대본 구간을 추가하면 트랙이 만들어집니다.</p>}
             </div>
           </div>
         </div>}
       </section>
       {addingCaption && addTarget && <AddCaptionDialog atMs={addingCaption.atMs} stale={addTarget.scene.revision !== addingCaption.scene.revision}
-        close={() => setAddingCaption(null)} save={text => onSceneTool(addingCaption.scene, {type:"addCaption", atMs:addingCaption.atMs, text})}/>}
+        close={() => setAddingCaption(null)} save={async text => (await onSceneTool(addingCaption.scene, {type:"addCaption", atMs:addingCaption.atMs, text}))!==null}/>}
       {assDraft && assTarget && assDraft.scene.captionAss && <AssEditor track={assDraft.scene.captionAss} scene={assTarget.scene}
-        remove={()=>onSceneTool(assDraft.scene,{type:"removeAssTrack"})} revision={assDraft.scene.revision} at={assDraft.at} initialLine={assDraft.line} close={()=>setAssDraft(null)} preview={setAssPreview}
+        remove={async expected=>(await onSceneTool({...assDraft.scene,revision:expected},{type:"removeAssTrack"}))!==null} revision={assDraft.scene.revision} at={assDraft.at} initialLine={assDraft.line} close={()=>setAssDraft(null)} preview={setAssPreview}
         seek={ms=>seek(assTarget.start + Math.max(0, Math.min(assTarget.durationMs-1,ms)))}
-        save={edits=>onSceneTool(assDraft.scene,{type:"editAssRows",edits})}/>}
+        save={(source,expected)=>onSceneTool({...assDraft.scene,revision:expected},{type:"setAssTrack",name:assDraft.scene.captionAss!.name,source})}/>}
       {captionDraft && captionTarget && <CaptionEditor key={captionTarget.scene.id}
         title={sceneLabel(captionTarget.scene, captionTarget.index)} scene={captionTarget.scene}
         draft={captionDraft} busy={busy} change={setCaptionDraft} close={() => setCaptionDraft(null)}
         seek={ms => seek(captionTarget.start + Math.min(captionTarget.durationMs - 1, Math.max(0, ms)))}
-        save={() => onSceneTool({ ...captionTarget.scene, revision: captionDraft.revision }, { type: "setCaptionCues", cues: captionDraft.cues })} />}
+        save={(cues,expected) => onSceneTool({ ...captionTarget.scene, revision: expected }, { type: "setCaptionCues", cues })} />}
       {menu && !busy && <ClipMenu action={menu} close={() => setMenu(null)} />}
     </>
   );
@@ -598,24 +699,31 @@ function PreviewImage({ url, name }: { url: string; name: string }) {
   return failed ? <p className="preview-error">이미지를 열 수 없습니다.</p> : <img src={url} alt={name} onError={() => setFailed(true)} />;
 }
 
-function SourcePreview({ asset, mediaDir }: { asset: Asset; mediaDir: string }) {
+function SourcePreview({ asset, mediaDir, rate, media }: { asset: Asset; mediaDir: string; rate: number; media: RefObject<HTMLMediaElement | null> }) {
   const [failed, setFailed] = useState(false);
   const url = sourceUrl(mediaDir, asset);
+  useEffect(() => {
+    if (media.current) {
+      media.current.defaultPlaybackRate = rate;
+      media.current.playbackRate = rate;
+    }
+  }, [rate, url]);
   return (
     <div className="picture">
       {failed ? <p className="preview-error">이 파일은 현재 미리보기에서 재생할 수 없습니다.</p> :
-        asset.kind === "video" ? <video src={url} controls onError={() => setFailed(true)} /> :
+        asset.kind === "video" ? <video ref={el => { media.current = el; }} src={url} controls controlsList="noplaybackrate" onError={() => setFailed(true)} /> :
         asset.kind === "image" ? <PreviewImage url={url} name={asset.name} /> :
-        <div className="audio-preview"><span aria-hidden="true">♪</span><strong>{asset.name}</strong><audio src={url} controls onError={() => setFailed(true)} /></div>}
+        <div className="audio-preview"><span aria-hidden="true">♪</span><strong>{asset.name}</strong><audio ref={el => { media.current = el; }} src={url} controls controlsList="noplaybackrate" onError={() => setFailed(true)} /></div>}
     </div>
   );
 }
 
-function SyncedClip({ kind, url, time, playing, muted, onDuration, loop=false, volume=1, sourceRange }: { kind: "video" | "audio"; url: string; time: number; playing: boolean; muted?: boolean; onDuration?: (ms: number) => void; loop?: boolean; volume?: number; sourceRange?: BgmSourceRange | null }) {
+function SyncedClip({ kind, url, time, playing, rate, muted, onDuration, loop=false, volume=1, sourceRange }: { kind: "video" | "audio"; url: string; time: number; playing: boolean; rate: number; muted?: boolean; onDuration?: (ms: number) => void; loop?: boolean; volume?: number; sourceRange?: BgmSourceRange | null }) {
   const ref = useRef<HTMLMediaElement | null>(null);
   const [failed, setFailed] = useState(false);
   function sync(element: HTMLMediaElement) {
     if (!element.readyState) return;
+    if (element.playbackRate !== rate) element.playbackRate = rate;
     const hasDuration = Number.isFinite(element.duration);
     element.volume = volume;
     const loopStart = sourceRange ? sourceRange.inMs/1000 : 0;

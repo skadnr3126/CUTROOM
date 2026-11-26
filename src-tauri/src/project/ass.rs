@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+mod new_rows;
+pub(crate) use new_rows::NewRow;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AssTrack {
@@ -185,30 +187,37 @@ pub(crate) fn ass_update(
     source: String,
     edits: Vec<Row>,
     duration_ms: u64,
+    additions: Option<Vec<NewRow>>,
 ) -> Result<String, String> {
+    let (source, edits) = match additions {
+        Some(rows) if !rows.is_empty() => new_rows::expand(&source, edits, rows)?,
+        _ => (source, edits),
+    };
     let parsed = events(&source)?;
     let mut lines: Vec<String> = source.lines().map(str::to_owned).collect();
     let mut changed = std::collections::HashMap::new();
+    let mut deleted = std::collections::HashSet::new();
     for edit in &edits {
         let e = parsed
             .iter()
             .find(|e| e.line == edit.line && !e.drawing)
             .ok_or("수정할 자막을 찾을 수 없습니다.")?;
+        if deleted.contains(&e.line) || changed.contains_key(&e.line) {
+            return Err("같은 자막이 중복되었습니다.".into());
+        }
+        if edit.text.trim().is_empty() {
+            deleted.insert(e.line);
+            continue;
+        }
         if edit.start_ms >= edit.end_ms
             || edit.end_ms > duration_ms
             || edit.start_ms % 10 != 0
             || edit.end_ms % 10 != 0
-            || edit.text.trim().is_empty()
             || edit.text.contains(['\r', '\0'])
         {
             return Err("자막 문구와 구간 안의 시작·끝 시간(0.01초 단위)을 확인해 주세요.".into());
         }
-        if changed
-            .insert(e.line, (edit.start_ms, edit.end_ms))
-            .is_some()
-        {
-            return Err("같은 자막이 중복되었습니다.".into());
-        }
+        changed.insert(e.line, (edit.start_ms, edit.end_ms));
         lines[e.line] = rewrite(
             e,
             edit.start_ms,
@@ -243,7 +252,11 @@ pub(crate) fn ass_update(
     if source.ends_with('\n') {
         result.push_str(sep);
     }
-    Ok(result)
+    if deleted.is_empty() {
+        Ok(result)
+    } else {
+        delete_matching(&result, |e| deleted.contains(&e.line))
+    }
 }
 
 #[derive(Serialize)]
@@ -430,9 +443,12 @@ fn join_lines(source: &str, lines: Vec<String>) -> Result<String, String> {
 }
 
 pub(super) fn delete(source: &str, start: u64, end: u64) -> Result<String, String> {
+    delete_matching(source, |e| e.from == start && e.to == end)
+}
+
+fn delete_matching(source: &str, selected: impl Fn(&Event) -> bool) -> Result<String, String> {
     let parsed = events(source)?;
     let captions: Vec<_> = parsed.iter().filter(|e| !e.drawing).collect();
-    let selected = |e: &Event| e.from == start && e.to == end;
     let first = captions
         .iter()
         .find(|e| selected(e))
@@ -443,7 +459,7 @@ pub(super) fn delete(source: &str, start: u64, end: u64) -> Result<String, Strin
         if !e.drawing && selected(e) {
             let mut lines = Vec::new();
             if last_group && e.line == first.line {
-                lines.push(rewrite(e, start, end, e.prefix).replacen(
+                lines.push(rewrite(e, e.from, e.to, e.prefix).replacen(
                     "Dialogue",
                     STYLE_TEMPLATE,
                     1,
@@ -451,18 +467,33 @@ pub(super) fn delete(source: &str, start: u64, end: u64) -> Result<String, Strin
             }
             replacements.insert(e.line, lines);
         } else if e.panel
-            && e.from <= start
-            && end <= e.to
             && captions.iter().any(|r| r.from == e.from && r.to <= e.to)
             && captions.iter().any(|r| r.to == e.to && r.from >= e.from)
         {
             // Remove only the part of a shared panel no surviving caption needs.
-            let mut keep = vec![(e.from, start), (end, e.to)];
+            let mut removed: Vec<_> = captions
+                .iter()
+                .filter(|r| selected(r) && e.from <= r.from && r.to <= e.to)
+                .map(|r| (r.from, r.to))
+                .collect();
+            if removed.is_empty() {
+                continue;
+            }
+            removed.sort_unstable();
+            let mut keep = Vec::new();
+            let mut cursor = e.from;
+            for (a, b) in removed {
+                if cursor < a {
+                    keep.push((cursor, a));
+                }
+                cursor = cursor.max(b);
+            }
+            keep.push((cursor, e.to));
             keep.extend(
                 captions
                     .iter()
                     .filter(|r| !selected(r))
-                    .map(|r| (r.from.max(start), r.to.min(end))),
+                    .map(|r| (r.from.max(e.from), r.to.min(e.to))),
             );
             keep.retain(|(a, b)| a < b);
             keep.sort_unstable();
@@ -474,16 +505,21 @@ pub(super) fn delete(source: &str, start: u64, end: u64) -> Result<String, Strin
                     spans.push((a, b));
                 }
             }
+            if spans.as_slice() == [(e.from, e.to)] {
+                continue;
+            }
             let mut lines: Vec<_> = spans
                 .into_iter()
                 .map(|(a, b)| rewrite(e, a, b, e.fields.last().unwrap()))
                 .collect();
-            if last_group {
-                lines.push(rewrite(e, start, end, e.fields.last().unwrap()).replacen(
-                    "Dialogue",
-                    STYLE_TEMPLATE,
-                    1,
-                ));
+            if last_group && e.from <= first.from && first.to <= e.to {
+                lines.push(
+                    rewrite(e, first.from, first.to, e.fields.last().unwrap()).replacen(
+                        "Dialogue",
+                        STYLE_TEMPLATE,
+                        1,
+                    ),
+                );
             }
             replacements.insert(e.line, lines);
         }

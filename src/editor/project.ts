@@ -64,7 +64,8 @@ export type Project = { bgm?: BgmClip[]; folders?: SourceFolder[]; timelineJobs?
 type View = { mediaExtensions: string[]; project: Project; mediaDir: string; exportAvailable: boolean;
   undo: { token: string; sceneId: string | null; removesScene: boolean } | null };
 
-export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
+export type NewAssRow = { templateLine: number; text: string };
+export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[]; additions?: NewAssRow[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
 
 export type Edit =
   | { type: "setBgm"; expected: BgmClip[]; clips: BgmClip[] }

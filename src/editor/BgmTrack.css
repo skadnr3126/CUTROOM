@@ -14,6 +14,7 @@
 .bgm-source-selection {position:absolute;inset-block:3px;background:#427369;pointer-events:none}
 .bgm-source-edge {position:absolute;top:1px;bottom:1px;width:9px;border:1px solid #aacfbf;background:#638f80;cursor:ew-resize;padding:0;touch-action:none}
 .bgm-source-edge.end {transform:translateX(-100%)}
-.bgm-draw-range {position:absolute;inset:0;width:100%;height:100%;background:transparent;border:1px dashed #9ed4c0;cursor:crosshair;touch-action:none}
+.bgm-body[draggable="true"] {cursor:grab;user-select:none}
+.bgm-body[draggable="true"]:active {cursor:grabbing}
 .overview-scroll {container-type:inline-size}
 .bgm-tools {max-width:100cqw;box-sizing:border-box}

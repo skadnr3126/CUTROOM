@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import type { CaptionCue } from "./project";
 import { CaptionTrack } from "./CaptionTrack";
-import type { AssRow } from "./AssEditor";
+import type { AssRow } from "./assRows";
 import type { MenuAction } from "./ClipMenu";
 
 type Group = CaptionCue & { rows: AssRow[] };
@@ -28,7 +28,12 @@ export function AssCaptionTrack({ rows, durationMs, scale, busy, seek, edit, sav
   remove: (cue: CaptionCue) => void; menu: (action: MenuAction) => void;
 }) {
   const groups = useMemo(() => groupRows(rows), [rows]);
-  return <CaptionTrack cues={groups} durationMs={durationMs} scale={scale} busy={busy} seek={seek} remove={remove} menu={menu}
+  return <CaptionTrack cues={groups} durationMs={durationMs} scale={scale} busy={busy} seek={seek} menu={menu}
+    remove={cue=>{
+      const group=groups.find(g=>g.startMs===cue.startMs && g.endMs===cue.endMs);
+      if(group && group.rows.length>1) edit(cue.startMs,group.rows[0].line);
+      else remove(cue);
+    }}
     precision={10} label="ASS 자막 트랙" open={(ms, i) => { if (i !== undefined) edit(ms, groups[i].rows[0].line); }}
     save={next => {
       const edits = next.flatMap(({ startMs, endMs }, i) => {

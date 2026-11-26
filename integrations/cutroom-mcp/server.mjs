@@ -67,7 +67,7 @@ const bgmClip = z.object({
 }).strict();
 const bgmProject = z.string().uuid().describe("Open project ID returned by list_bgm");
 tool("list_bgm", "List music in the source bin and all timeline BGM clips with their editable settings. Use timeline for scene IDs.", {});
-tool("set_bgm", "Add or update one timeline BGM. For a new clip use a fresh UUID, volume 35 and zero fades unless requested. To update, copy the previous clip from list_bgm to expected and change only the desired fields in clip. Undoable.", {
+tool("set_bgm", "Add or update one timeline BGM. Unless a range is requested, place one source duration from the start, capped at timeline end. Use list_bgm and timeline to calculate the numeric end offset. For new clips use a fresh UUID, volume 35 and zero fades unless requested. To update, copy the previous clip from list_bgm to expected and change only the desired fields in clip. Undoable.", {
   projectId:bgmProject, clip:bgmClip, expected:bgmClip.nullable().optional()
 });
 tool("delete_bgm", "Remove one timeline BGM clip, preserving its source music in the bin. Pass the clip previously read from list_bgm. Undoable.", {

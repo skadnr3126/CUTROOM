@@ -24,6 +24,7 @@ pub(crate) enum SceneTool {
     RemoveAssTrack,
     EditAssRows {
         edits: Vec<super::ass::Row>,
+        additions: Option<Vec<super::ass::NewRow>>,
     },
     SetAssTrack {
         name: String,
@@ -104,14 +105,18 @@ impl SceneTool {
                 }
                 scene.revision += 1;
             }
-            Self::EditAssRows { edits } => {
+            Self::EditAssRows { edits, additions } => {
                 let track = scene
                     .settings
                     .caption_ass
                     .as_mut()
                     .ok_or("ASS 자막을 먼저 불러와 주세요.")?;
-                let source =
-                    super::ass::ass_update(track.source.clone(), edits, before.duration_ms)?;
+                let source = super::ass::ass_update(
+                    track.source.clone(),
+                    edits,
+                    before.duration_ms,
+                    additions,
+                )?;
                 if source == track.source {
                     return Ok(None);
                 }

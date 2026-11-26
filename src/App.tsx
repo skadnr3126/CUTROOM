@@ -302,7 +302,7 @@ function Editor({session, initialSeek}: {session:ProjectSession; initialSeek?:Ed
           onSceneTool={async (target, tool) => {
             const next = await edit({ type: "sceneTool", sceneId: target.id, expected: target.revision, tool });
             if (next) rebaseTimelineDrafts(next);
-            return !!next;
+            return next?.scenes.find(s=>s.id===target.id)?.revision ?? null;
           }}
           onVisualChange={storePlacement}
           onCutRange={async (target, clipId, startMs, endMs) => {

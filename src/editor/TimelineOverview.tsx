@@ -97,7 +97,13 @@ export function TimelineOverview({ sections, assets, bgm, onBgmChange, mediaDir,
                   select(id, id === selectedId ? time : entry.start);
                   rename.start(entry.scene, "timeline");
                 }}
-                onClick={() => { setPicker(null); select(id, entry.start); }}>
+                onClick={event => {
+                  setPicker(null);
+                  const offset = event.detail === 0 ? 0 : Math.round(
+                    (event.clientX - event.currentTarget.getBoundingClientRect().left) / pixelsPerMs
+                  );
+                  select(id, entry.start + Math.max(0, Math.min(entry.durationMs - 1, offset)));
+                }}>
                 <strong title={label}>{label}</strong><small>{sourceTime(entry.start)}–{sourceTime(entry.end)}</small>
               </button>}
               {lanes.map(track => <div className="overview-clips" key={track}>
@@ -124,7 +130,7 @@ export function TimelineOverview({ sections, assets, bgm, onBgmChange, mediaDir,
             </div>;
           })}
           </div>
-          <BgmTrack sections={sections} clips={bgm} assets={assets} scale={pixelsPerMs} busy={busy} dragAsset={dragAsset} time={time} onChange={onBgmChange}/>
+          <BgmTrack key={mediaDir} mediaDir={mediaDir} sections={sections} clips={bgm} assets={assets} scale={pixelsPerMs} busy={busy} dragAsset={dragAsset} time={time} onChange={onBgmChange}/>
           <i className="overview-head" aria-hidden="true" style={{ left: Math.max(0, Math.min(duration * pixelsPerMs - 2, head - 1)) }} />
         </div>}
     </div>
