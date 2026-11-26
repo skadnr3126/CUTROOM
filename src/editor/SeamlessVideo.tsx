@@ -7,6 +7,7 @@ export type PreviewVideoSource = {
   timeMs: number;
   endMs?: number;
   muted?: boolean;
+  volume?: number;
   onDuration?: (durationMs: number) => void;
 };
 
@@ -75,6 +76,8 @@ function VideoSlot({ source, slot, visible, playing, rate, guardEnd, ready, fail
   function sync() {
     const video = ref.current;
     if (!video) return;
+    const volume = source.volume ?? 1;
+    if (video.volume !== volume) video.volume = volume;
     if (slot === "held") {
       if (!video.paused) video.pause();
       return;

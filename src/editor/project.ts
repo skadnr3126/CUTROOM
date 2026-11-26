@@ -27,7 +27,7 @@ export type Asset = {
   removedFromBin?: boolean;
 };
 
-export type Placement = { assetId: string; inMs: number };
+export type Placement = { assetId: string; inMs: number; volume?: number };
 export type VideoTrim = { offsetMs: number; outMs: number };
 export type VisualPlacement = Placement & { frame?: ClipFrame; muted?: boolean; trim?: VideoTrim };
 export type ClipFrame = { size: number; x: number; y: number };
@@ -65,7 +65,9 @@ type View = { mediaExtensions: string[]; project: Project; mediaDir: string; exp
   undo: { token: string; sceneId: string | null; removesScene: boolean } | null };
 
 export type NewAssRow = { templateLine: number; text: string };
-export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[]; additions?: NewAssRow[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
+export type ClipVolumeTarget = { kind: "clip"; clipId: string } | { kind: "sceneAudio" };
+export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[]; additions?: NewAssRow[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string }
+  | { type: "setClipVolume"; target: ClipVolumeTarget; volume: number };
 
 export type CutDisposition = "discard" | "library";
 export type CutRangeEdit =
@@ -203,6 +205,7 @@ export function useProject() {
 
   async function edit(edit: Edit) {
     const label = edit.type === "cutClipRange" && edit.disposition === "library" ? "잘라낸 영상 저장 중"
+      : edit.type === "sceneTool" && edit.tool.type === "setClipVolume" ? "클립 음량 저장 중"
       : edit.type === "sceneTool" ? (edit.tool.type === "duplicateClip" ? "클립 복제 중" : "자막 저장 중")
       : "프로젝트 저장 중";
     const result = await run(label, () => invoke<View>("project_edit", { edit }));

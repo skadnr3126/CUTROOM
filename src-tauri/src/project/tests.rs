@@ -136,6 +136,85 @@ fn middle_cut_fixture(store: &ProjectStore) -> (Project, uuid::Uuid, uuid::Uuid,
 }
 
 #[test]
+fn clip_volume_roundtrips_without_changing_legacy_timing_or_other_placements() {
+    use super::clip_volume::ClipVolumeTarget;
+    use serde_json::json;
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (baseline, scene, _, overlay) = middle_cut_fixture(&store);
+    let target = |clip_id| ClipVolumeTarget::Clip { clip_id };
+    let level = |project: &Project, clip_id| {
+        target(clip_id).get(project, &project.scenes[0]).unwrap().volume.percent()
+    };
+    let edit = |expected, clip_id, volume| {
+        store.edit(serde_json::from_value(json!({
+            "type":"sceneTool","sceneId":scene,"expected":expected,
+            "tool":{"type":"setClipVolume","target":target(clip_id),"volume":volume}
+        })).unwrap())
+    };
+    assert_eq!(level(&baseline, scene), 100);
+    let changed = edit(0, scene, 42).unwrap();
+    assert_eq!(edit(1, scene, 42).unwrap().project.scenes[0].revision, 1);
+    assert!(edit(0, scene, 17).is_err());
+    let settings = &changed.project.scenes[0].settings;
+    assert_eq!(settings.duration_ms, baseline.scenes[0].settings.duration_ms);
+    let visual = settings.visual.unwrap();
+    assert!(visual.muted);
+    assert_eq!(visual.trim.unwrap().offset_ms, 200);
+    assert_eq!(level(&changed.project, overlay), 100); // Same asset on another track.
+    let split = store.edit(serde_json::from_value(json!({
+        "type":"splitClip","sceneId":scene,"expected":1,"clipId":scene,"atMs":1000
+    })).unwrap()).unwrap();
+    let right = split.project.scenes[0].settings.clips[1].id;
+    assert_eq!(level(&split.project, right), 42);
+    let edit_right = edit(2, right, 0).unwrap();
+    let reopened = ProjectStore::new(dir.path().into()).load().unwrap();
+    assert_eq!((level(&reopened, scene), level(&reopened, right)), (42, 0));
+    let undone = store.edit(serde_json::from_value(json!({
+        "type":"undo","token":json!(edit_right.undo.unwrap())["token"]
+    })).unwrap()).unwrap();
+    assert_eq!(level(&undone.project, right), 42);
+    let changed_overlay = edit(undone.project.scenes[0].revision, overlay, 13).unwrap();
+    let info = target(overlay).get(&changed_overlay.project, &changed_overlay.project.scenes[0]).unwrap();
+    assert_eq!(info.volume.percent(), 13);
+    assert!(!info.muted);
+}
+
+#[test]
+fn clip_volume_checks_audio_presence_and_accepts_only_whole_percentages() {
+    use super::clip_volume::{ClipVolume, ClipVolumeTarget};
+    use serde_json::json;
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (mut project, scene_id, _, _) = middle_cut_fixture(&store);
+    let audio = ClipVolumeTarget::SceneAudio {};
+    assert!(serde_json::from_value::<ClipVolumeTarget>(
+        json!({"kind":"sceneAudio","clipId":scene_id})
+    ).is_err());
+    assert!(audio.get(&project, &project.scenes[0]).is_err());
+    project.assets[0].has_audio = false;
+    let video = ClipVolumeTarget::Clip { clip_id: scene_id };
+    assert!(video.set(&mut project, 0, ClipVolume::try_from(50).unwrap()).is_err());
+    let audio_id = uuid::Uuid::new_v4();
+    project.assets.push(serde_json::from_value(json!({
+        "id":audio_id,"kind":"audio","name":"voice","extension":"wav","hasAudio":true
+    })).unwrap());
+    project.scenes[0].settings.audio = Some(Placement::new(audio_id, 20));
+    audio.set(&mut project, 0, ClipVolume::try_from(25).unwrap()).unwrap();
+    let info = audio.get(&project, &project.scenes[0]).unwrap();
+    assert_eq!((info.asset_id, info.volume.percent(), info.muted), (audio_id, 25, false));
+    for bad_input in [json!(101), json!(-1), json!(22.5), json!("50")] {
+        assert!(serde_json::from_value::<Edit>(json!({
+            "type":"sceneTool","sceneId":scene_id,"expected":0,
+            "tool":{"type":"setClipVolume","target":audio,"volume":bad_input}
+        })).is_err());
+        assert!(serde_json::from_value::<Placement>(json!({
+            "assetId":audio_id,"inMs":0,"volume":bad_input
+        })).is_err());
+    }
+}
+
+#[test]
 fn splitting_a_clip_keeps_its_frames_and_duration_on_both_tracks() {
     use serde_json::json;
     let dir = tempdir().unwrap();
@@ -469,10 +548,7 @@ fn timeline_undo_restores_committed_edits_in_reverse_order() {
     let visual = VisualPlacement {
         frame: None,
         muted: false,
-        source: Placement {
-            asset_id,
-            in_ms: 200,
-        },
+        source: Placement::new(asset_id, 200),
         trim: None,
     };
     let baseline = store
@@ -517,10 +593,7 @@ fn timeline_undo_restores_committed_edits_in_reverse_order() {
             visual: VisualPlacement {
                 frame: None,
                 muted: false,
-                source: Placement {
-                    asset_id,
-                    in_ms: 1700,
-                },
+                source: Placement::new(asset_id, 1700),
                 trim: None,
             },
         },
@@ -676,10 +749,7 @@ fn script_links_survive_reorder_and_save_and_stale_edits_are_rejected() {
     settings.visual = Some(VisualPlacement {
         frame: None,
         muted: false,
-        source: Placement {
-            asset_id: source_id,
-            in_ms: 250,
-        },
+        source: Placement::new(source_id, 250),
         trim: None,
     });
     settings.caption = "한글 자막".into();
@@ -812,10 +882,7 @@ fn renders_trimmed_clips_with_korean_captions_and_voice() {
             first.visual = Some(VisualPlacement {
                 frame: None,
                 muted: false,
-                source: Placement {
-                    asset_id: project.assets[0].id,
-                    in_ms: 300,
-                },
+                source: Placement::new(project.assets[0].id, 300),
                 trim: Some(VideoTrim {
                     offset_ms: 300,
                     out_ms: 900,
@@ -827,10 +894,7 @@ fn renders_trimmed_clips_with_korean_captions_and_voice() {
             second.visual = Some(VisualPlacement {
                 frame: None,
                 muted: false,
-                source: Placement {
-                    asset_id: project.assets[1].id,
-                    in_ms: 0,
-                },
+                source: Placement::new(project.assets[1].id, 0),
                 trim: None,
             });
             second.caption_cues = serde_json::from_value(serde_json::json!([
@@ -838,10 +902,7 @@ fn renders_trimmed_clips_with_korean_captions_and_voice() {
                 {"startMs":400,"endMs":650,"text":"두 번째 자막"}
             ]))
             .unwrap();
-            second.audio = Some(Placement {
-                asset_id: project.assets[2].id,
-                in_ms: 250,
-            });
+            second.audio = Some(Placement::new(project.assets[2].id, 250));
             Ok(())
         })
         .unwrap();
@@ -1491,7 +1552,7 @@ fn chat_timeline_commits_once_and_undo_restores_the_entire_request() {
         for (id,kind,ext,duration) in [(video,"video","mp4",Some(8000)),(photo,"image","png",None)] {
             p.assets.push(serde_json::from_value(json!({"id":id,"kind":kind,"extension":ext,"name":ext,"durationMs":duration,"hasAudio":false})).unwrap());
         }
-        p.scenes[0].settings.visual=Some(VisualPlacement{frame:None,muted:false,source:Placement{asset_id:video,in_ms:500},trim:None});
+        p.scenes[0].settings.visual=Some(VisualPlacement{frame:None,muted:false,source:Placement::new(video, 500),trim:None});
         Ok(())
     }).unwrap().project;
     let a = original.scenes[0].id;

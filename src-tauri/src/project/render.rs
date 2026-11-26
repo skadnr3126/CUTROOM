@@ -21,9 +21,10 @@ use encoder::Encoder;
 use export::Export;
 
 use super::{
+    clip_volume::ClipVolume,
     composition_layout::{self, CaptionChange, Layout, VisualKeyframe},
     files::media_command,
-    model::{Kind, Placement, Project, SceneSettings},
+    model::{Kind, Project, SceneSettings},
 };
 
 #[derive(Clone, Copy, Default, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -202,14 +203,19 @@ fn scene_command(
     } else {
         command.args(["-f", "lavfi", "-i", "color=c=0x151820:s=1280x720:r=30"]);
     }
-    if let Some(Placement { asset_id, in_ms }) = scene.audio.or(natural_audio)
+    let audio = scene.audio.or(natural_audio);
+    if let Some(source) = audio
         && !project
-            .asset(asset_id)?
+            .asset(source.asset_id)?
             .duration_ms
-            .is_some_and(|duration| in_ms >= duration)
+            .is_some_and(|duration| source.in_ms >= duration)
     {
-        let asset = project.asset(asset_id)?;
-        let seek = if audio_trim.is_some() { 0 } else { in_ms };
+        let asset = project.asset(source.asset_id)?;
+        let seek = if audio_trim.is_some() {
+            0
+        } else {
+            source.in_ms
+        };
         input(&mut command, &asset.path_in(media), seek);
     } else {
         command.args(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]);
@@ -296,7 +302,7 @@ fn scene_command(
         let length = seconds(layer.duration_ms);
         let stream = index + 2;
         if layer.sound && asset.has_audio && scene.audio.is_none() {
-            extra_audio.push((stream, length.clone(), layer.start_ms));
+            extra_audio.push((stream, length.clone(), layer.start_ms, layer.volume));
         }
         video_filter.push_str(&format!(
             "[bg{index}];[{stream}:v]fps=30,scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1,trim=duration={length},setpts=PTS-STARTPTS+{start}/TB[fg{index}];[bg{index}][fg{index}]overlay=x=(W-{w})*{x}/100+({w}-w)/2:y=(H-{h})*{y}/100+({h}-h)/2:enable='gte(t,{start})*lt(t,{end})'",
@@ -322,6 +328,9 @@ fn scene_command(
         )?;
     }
     let mut audio_filter = String::from("[1:a:0]aresample=48000,aformat=channel_layouts=stereo");
+    if let Some(source) = audio {
+        append_volume(&mut audio_filter, source.volume);
+    }
     if let Some((source, (lead, length))) = audio_trim {
         audio_filter.push_str(&format!(
             ",atrim=start={}:end={},asetpts=N/SR/TB",
@@ -340,8 +349,14 @@ fn scene_command(
         audio_filter.push_str(&duration);
         audio_filter.push_str("[bed];");
         let mut inputs = String::from("[bed]");
-        for (index, length, delay) in &extra_audio {
-            audio_filter.push_str(&format!("[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo,atrim=duration={length},asetpts=PTS-STARTPTS,adelay={delay}:all=1[a{index}];"));
+        for (index, length, delay, volume) in &extra_audio {
+            audio_filter.push_str(&format!(
+                "[{index}:a:0]aresample=48000,aformat=channel_layouts=stereo"
+            ));
+            append_volume(&mut audio_filter, *volume);
+            audio_filter.push_str(&format!(
+                ",atrim=duration={length},asetpts=PTS-STARTPTS,adelay={delay}:all=1[a{index}];"
+            ));
             inputs.push_str(&format!("[a{index}]"));
         }
         audio_filter.push_str(&format!(
@@ -373,6 +388,15 @@ fn scene_command(
     encoder.add_output_args(&mut command);
     command.args(["-c:a", "aac", "-b:a", "160k", "-ar", "48000", output]);
     Ok(command)
+}
+
+fn append_volume(filters: &mut String, volume: ClipVolume) {
+    if volume.percent() != 100 {
+        filters.push_str(&format!(
+            ",volume={:.2}",
+            f64::from(volume.percent()) / 100.0
+        ));
+    }
 }
 
 fn input(command: &mut Command, path: &Path, in_ms: u64) {

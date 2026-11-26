@@ -37,6 +37,10 @@ pub(crate) enum SceneTool {
     SetCaptionCues {
         cues: Vec<super::caption_track::CaptionCue>,
     },
+    SetClipVolume {
+        target: super::clip_volume::ClipVolumeTarget,
+        volume: super::clip_volume::ClipVolume,
+    },
     DuplicateClip {
         clip_id: Uuid,
     },
@@ -163,6 +167,12 @@ impl SceneTool {
                 scene.settings.caption.clear();
                 scene.settings.caption_cues = cues;
                 scene.revision += 1;
+            }
+            Self::SetClipVolume { target, volume } => {
+                if !target.set(project, index, volume)? {
+                    return Ok(None);
+                }
+                project.scenes[index].revision += 1;
             }
             Self::DuplicateClip { clip_id } => {
                 let mut settings = before.clone();

@@ -76,14 +76,26 @@ tool("set_bgm", "Add or update one timeline BGM. Unless a range is requested, pl
 tool("delete_bgm", "Remove one timeline BGM clip, preserving its source music in the bin. Pass the clip previously read from list_bgm. Undoable.", {
   projectId:bgmProject, expected:bgmClip
 });
-tool("get_selection", "Read the active editor selection and timeline playhead, in milliseconds.", {});
+tool("get_selection", "Read the active editor selection and timeline playhead, in milliseconds. volumeTarget identifies the selected clip or dedicated audio for clip volume tools.", {});
 tool("get_asset", "Resolve an asset in the open project to its media path, duration and audio metadata.", {assetId:z.string().uuid()});
 tool("scene", "Read a scene including its captions, source placements and current revision.", { sceneId });
-const editClip = {
+const clipScope = {
   projectId: z.string().uuid().describe("Open project ID from timeline"),
-  sceneId, expected
+  sceneId
 };
+const editClip = { ...clipScope, expected };
 const clipId = z.string().uuid().describe("ID from scene.clips or scene.overlays. For a single scene.visual with no clips, use sceneId.");
+const volumeTarget = z.discriminatedUnion("kind", [
+  z.object({kind: z.literal("clip"), clipId}).strict(),
+  z.object({kind: z.literal("sceneAudio")}).strict()
+]).describe("Use clip for a placed video with source audio, or sceneAudio for the scene's dedicated audio placement.");
+tool("get_clip_volume", "Read the saved volume (0–100%, default 100), mute switch, and current scene revision for one placement. overriddenBySceneAudio indicates that this video's sound is replaced by the scene's dedicated audio.", {
+  ...clipScope, target: volumeTarget
+});
+tool("set_clip_volume", "Set one placement's volume in preview and MP4 export. Use get_clip_volume for the current revision and mute state. Changing volume preserves the mute switch and other uses of the same source. Undoable.", {
+  ...editClip, target: volumeTarget,
+  volume: z.number().int().min(0).max(100).describe("Percentage of source level. 0 = silent, 100 = original.")
+});
 const clipMs = z.number().int().nonnegative().describe("Milliseconds from the clip's timeline start, including trim.offsetMs if present");
 tool("split_clip", "Split a video or image clip at one time and keep both parts on the timeline. No media file is created. Read scene before editing and again for the new clip IDs. Undoable.", {
   ...editClip, clipId, atMs: clipMs

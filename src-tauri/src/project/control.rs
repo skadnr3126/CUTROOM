@@ -1,6 +1,7 @@
 //! Local editing commands share the editor's revision checks, history and renderer.
 use super::{
     Edit, ProjectStore, bgm, caption_track::CaptionCue,
+    clip_volume::{ClipVolume, ClipVolumeTarget},
     cut_range::{ClipRange, CutDisposition},
     files, scene_tools::SceneTool,
 };
@@ -35,6 +36,18 @@ pub(crate) enum Command {
     },
     Scene {
         scene_id: Uuid,
+    },
+    GetClipVolume {
+        project_id: Uuid,
+        scene_id: Uuid,
+        target: ClipVolumeTarget,
+    },
+    SetClipVolume {
+        project_id: Uuid,
+        scene_id: Uuid,
+        expected: u32,
+        target: ClipVolumeTarget,
+        volume: ClipVolume,
     },
     SplitClip {
         project_id: Uuid,
@@ -141,6 +154,13 @@ fn selection(app: &AppHandle, store: &ProjectStore) -> Result<Value, String> {
     Ok(value)
 }
 
+fn check_open_project(store: &ProjectStore, project_id: Uuid) -> Result<(), String> {
+    if store.id != project_id {
+        return Err("열린 프로젝트가 바뀌었습니다. 타임라인을 다시 조회해 주세요.".into());
+    }
+    Ok(())
+}
+
 fn edit_clip(
     app: &AppHandle,
     store: &ProjectStore,
@@ -148,9 +168,7 @@ fn edit_clip(
     scene_id: Uuid,
     edit: Edit,
 ) -> Result<Value, String> {
-    if store.id != project_id {
-        return Err("열린 프로젝트가 바뀌었습니다. 타임라인을 다시 조회해 주세요.".into());
-    }
+    check_open_project(store, project_id)?;
     let (view, saved_cuts) = store.edit_with_saved_cuts(edit)?;
     let scene = &view.project.scenes[view.project.scene_index(scene_id)?];
     let _ = app.emit("cutroom-project-changed", ());
@@ -197,6 +215,21 @@ pub(crate) fn execute(
         Command::Scene { scene_id } => {
             let scene = &project.scenes[project.scene_index(scene_id)?];
             return Ok(json!(scene));
+        }
+        Command::GetClipVolume { project_id, scene_id, target } => {
+            check_open_project(store, project_id)?;
+            let scene = &project.scenes[project.scene_index(scene_id)?];
+            let info = target.get(&project, scene)?;
+            return Ok(json!({
+                "projectId": project_id, "sceneId": scene_id, "revision": scene.revision,
+                "target": target, "assetId": info.asset_id, "volume": info.volume, "muted": info.muted,
+                "overriddenBySceneAudio": scene.settings.audio.is_some() && matches!(target, ClipVolumeTarget::Clip { .. })
+            }));
+        }
+        Command::SetClipVolume { project_id, scene_id, expected, target, volume } => {
+            return edit_clip(app, store, project_id, scene_id, Edit::SceneTool {
+                scene_id, expected, tool: SceneTool::SetClipVolume { target, volume },
+            });
         }
         Command::SplitClip { project_id, scene_id, expected, clip_id, at_ms } => {
             return edit_clip(app, store, project_id, scene_id, Edit::SplitClip {

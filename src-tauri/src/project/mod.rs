@@ -9,6 +9,7 @@ mod caption_track;
 pub(crate) mod capture;
 pub(crate) mod chat_timeline;
 mod clip_media;
+mod clip_volume;
 mod composition_layout;
 pub(crate) mod control;
 mod cut_range;
@@ -440,10 +441,7 @@ impl ProjectStore {
                         let card = VisualPlacement {
                             frame: None,
                             muted: false,
-                            source: Placement {
-                                asset_id: asset.id,
-                                in_ms: 0,
-                            },
+                            source: Placement::new(asset.id, 0),
                             trim: None,
                         };
                         if let Some(first) = settings.clips.first_mut() {

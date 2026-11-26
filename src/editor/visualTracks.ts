@@ -20,11 +20,11 @@ export function visualClips(scene: Scene): TrackClip[] {
     return { ...clip, track: 0, startMs };
   });
   for (const [i, layer] of (scene.overlays ?? []).entries()) {
-    result.push({      
-id: layer.id, track: layer.track ?? i + 1, startMs: layer.startMs,
+    result.push({
+      id: layer.id, track: layer.track ?? i + 1, startMs: layer.startMs,
       assetId: layer.assetId, durationMs: layer.durationMs, inMs: layer.inMs,
-      muted: !layer.sound, frame: { size: layer.size, x: layer.x, y: layer.y }    
-});
+      volume: layer.volume, muted: !layer.sound, frame: { size: layer.size, x: layer.x, y: layer.y },
+    });
   }
   return result;
 }
@@ -46,10 +46,10 @@ export function trackSettings(scene: Scene, items: TrackClip[]): SceneSettings {
       clips.push(gap ? { ...clip, gapMs: gap } : clip);
       cursor = endOf(item);
     } else {
-      overlays.push({        
-id: clip.id, assetId: clip.assetId, startMs, track, sound: !clip.muted,
-        inMs: clip.inMs, durationMs: clip.durationMs, ...(clip.frame ?? fullFrame)      
-});
+      overlays.push({
+        id: clip.id, assetId: clip.assetId, startMs, track, sound: !clip.muted, volume: clip.volume,
+        inMs: clip.inMs, durationMs: clip.durationMs, ...(clip.frame ?? fullFrame),
+      });
     }
   }
   return {    

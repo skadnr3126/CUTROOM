@@ -209,6 +209,111 @@ fn repeat_export_reuses_only_current_parts_and_remixes_bgm() {
 
 #[test]
 #[ignore = "Requires CUTROOM_TEST_TOOLS with FFmpeg"]
+fn clip_volume_changes_only_the_selected_sound_in_the_export() {
+    let ff = ffmpeg();
+    let dir = tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let mut project = Project::default();
+    let id = Uuid::new_v4();
+    project.assets.push(
+        serde_json::from_value(json!({
+            "id":id,"name":"tone","kind":"video","extension":"mp4","durationMs":600,"hasAudio":true
+        }))
+        .unwrap(),
+    );
+    video(
+        &ff,
+        &project.asset(id).unwrap().path_in(dir.path()),
+        "blue",
+        400,
+    );
+    let audio_id = Uuid::new_v4();
+    project.assets.push(serde_json::from_value(json!({
+        "id":audio_id,"name":"replacement tone","kind":"audio","extension":"m4a","durationMs":600,"hasAudio":true
+    })).unwrap());
+    run(Command::new(&ff)
+        .args(["-v", "error", "-i"])
+        .arg(project.asset(id).unwrap().path_in(dir.path()))
+        .args(["-vn", "-c:a", "copy"])
+        .arg(project.asset(audio_id).unwrap().path_in(dir.path())));
+    for section in ["original", "main", "overlay", "replacement", "silent"] {
+        project.add_scene(section.into());
+        let settings = &mut project.scenes.last_mut().unwrap().settings;
+        settings.duration_ms = 600;
+        let mut visual = json!({"assetId":id,"inMs":0});
+        match section {
+            "original" => {}
+            "main" => visual["volume"] = json!(50),
+            "overlay" | "replacement" => {
+                visual["muted"] = json!(true);
+                settings.overlays.push(
+                    serde_json::from_value(json!({
+                        "id":Uuid::new_v4(),"assetId":id,"inMs":0,"startMs":0,"durationMs":600,
+                        "size":50,"x":0,"y":0,"sound":true,"volume":25
+                    }))
+                    .unwrap(),
+                );
+                if section == "replacement" {
+                    settings.audio = Some(
+                        serde_json::from_value(json!({
+                            "assetId":audio_id,"inMs":0,"volume":75
+                        }))
+                        .unwrap(),
+                    );
+                }
+            }
+            "silent" => visual["volume"] = json!(0),
+            _ => unreachable!(),
+        }
+        settings.visual = Some(serde_json::from_value(visual).unwrap());
+    }
+    let export = |project: &Project, name: &str| {
+        let file = dir.path().join(name);
+        let report = Export {
+            ffmpeg: &ff,
+            media: dir.path(),
+            project,
+            styles: &[],
+            cache_root: Some(&cache),
+        }
+        .write_with_encoder(&file, 0..project.scenes.len(), Encoder::Cpu)
+        .unwrap();
+        (sound(&ff, &file), report)
+    };
+    let rms = |pcm: &[i16], section: usize| {
+        // Sample well inside each section, away from AAC priming and join boundaries.
+        let start = section * 4800 + 1600;
+        (pcm[start..start + 800]
+            .iter()
+            .map(|&s| f64::from(s).powi(2))
+            .sum::<f64>()
+            / 800.0)
+            .sqrt()
+    };
+    let (first, _) = export(&project, "volumes.mp4");
+    let reference = rms(&first, 0);
+    assert!(reference > 100.0);
+    for (section, expected) in [1.0, 0.50, 0.25, 0.75, 0.0].into_iter().enumerate() {
+        let measured = rms(&first, section) / reference;
+        assert!(
+            (measured - expected).abs() < 0.02,
+            "section {section}: {measured}"
+        );
+    }
+    project.scenes[1]
+        .settings
+        .visual
+        .as_mut()
+        .unwrap()
+        .source
+        .volume = 35u8.try_into().unwrap();
+    let (updated, report) = export(&project, "updated.mp4");
+    assert_eq!((report.rendered, report.reused), (1, 4));
+    assert!((rms(&updated, 1) / reference - 0.35).abs() < 0.02);
+}
+
+#[test]
+#[ignore = "Requires CUTROOM_TEST_TOOLS with FFmpeg"]
 fn auto_and_requested_hardware_export_decodable_mp4() {
     let ff = ffmpeg();
     let dir = tempdir().unwrap();

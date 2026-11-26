@@ -59,7 +59,7 @@ impl SourceRecipe {
                 return Err("편집안에는 첨부한 소스만 사용할 수 있습니다.".to_owned());
             }
             project.asset(asset_id)?;
-            Ok(Some(Placement { asset_id, in_ms }))
+            Ok(Some(Placement::new(asset_id, in_ms)))
         };
         let mut has_content = false;
         let mut scenes = Vec::with_capacity(self.clips.len());

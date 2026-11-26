@@ -253,10 +253,7 @@ fn apply_one(
                 return Err("소스 보관함에서 삭제된 파일입니다.".into());
             }
             let start = start_ms.unwrap_or(0);
-            let source = Placement {
-                asset_id: asset.id,
-                in_ms: start,
-            };
+            let source = Placement::new(asset.id, start);
             if asset.kind == Kind::Audio {
                 if end_ms.is_some() || position.is_some() {
                     return Err("구간 음성 트랙에는 원본 시작점만 지정할 수 있습니다.".into());

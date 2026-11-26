@@ -17,6 +17,7 @@ import { CaptionEditor } from "./CaptionEditor";
 import { VisualTrack } from "./VisualTrack";
 import { NeighborPreviewTrack } from "./NeighborPreviewTrack";
 import { CutRangeControls } from "./CutRangeControls";
+import { ClipVolumeControl, useClipVolume } from "./ClipVolumeControl";
 import { visualClips, trackSettings, trackNumbers, canSplit, resizeClip, removeClip, placeClip, endOf, fullFrame, frameStyle, type TrackClip } from "./visualTracks";
 import { timelineSections, type TimelinePiece } from "./timeline";
 import type { FolderControls } from "./BinFolders";
@@ -140,6 +141,13 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const positionRef = useRef(0);
   const seekVersion = useRef(0);
   const byId = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
+  const pickedAudio = picked?.track === "audio" && detail.some(piece => piece.scene.id === picked.sceneId);
+  const volumeClip = selected ?? (pickedAudio && !working?.audio ? items.find(c => !c.track && c.id === picked.sceneId) : undefined);
+  const volumeId = volumeClip && byId.get(volumeClip.assetId)?.hasAudio ? volumeClip.id
+    : pickedAudio && working?.audio ? null : undefined;
+  const savedVolume = (volumeId === null ? working?.audio?.volume : volumeClip?.volume) ?? 100;
+  const volume = useClipVolume(scope === "detail" ? scene : null, volumeId, savedVolume,
+    (owner, target, value) => onSceneTool(owner, { type: "setClipVolume", target, volume: value }));
   const binAssets = useMemo(() => project.assets.filter((asset) => !asset.removedFromBin), [project.assets]);
   const [menu, setMenu] = useState<MenuAction | null>(null);
   const labelWidth = scope === "detail" ? 63 : 0;
@@ -308,7 +316,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     await emit("cutroom-selection-" + nonce, {
       session:binding.session, projectId:binding.id, sceneId:scene?.id ?? null, sourceId:source?.id ?? null,
       clip:selected ? {id:selected.id,assetId:selected.assetId,track:selected.track, startMs:selected.startMs,durationMs:selected.durationMs} : null,
-      selectedTrack:track, previewMode:liveTrack ? "recording" : mode, timelinePlaying:playing,
+      selectedTrack:track, volumeTarget:volume.target, previewMode:liveTrack ? "recording" : mode, timelinePlaying:playing,
       playhead:{timelineMs:Math.round(time),sceneId:playheadSection?.scene.id ?? null,
         atMs:playheadSection ? Math.round(time - playheadSection.start) : null}
     });
@@ -438,6 +446,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
       timeMs: clipTime,
       endMs: range?.outMs ?? sourceStart + current.durationMs,
       muted: !!audio || visualPlacement.muted,
+      volume: volume.previewGain(current.owner, current.scene.id, visualPlacement.volume),
       onDuration: measureUnknownDuration(visual),
     };
   }
@@ -456,6 +465,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
           url: sourceUrl(mediaDir, asset),
           originMs: followingPiece.start - nextRange.inMs,
           timeMs: nextRange.inMs,
+          volume: volume.previewGain(followingPiece.owner, followingPiece.scene.id, placement.volume),
         };
       }
     }
@@ -535,8 +545,9 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
                     playing={playing} rate={previewRate} volume={clip.volume/100*fadeIn*fadeOut}/>;
                 })}
-                {audio && <SyncedAudio key={`${current?.owner.id}:${audio.id}`} url={sourceUrl(mediaDir, audio)}
-                  time={(localTime + (current ? current.start - current.sectionStart : 0) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} rate={previewRate} />}
+                {audio && current && <SyncedAudio key={`${current.owner.id}:${audio.id}`} url={sourceUrl(mediaDir, audio)}
+                  volume={volume.previewGain(current.owner, null, currentScene?.audio?.volume)}
+                  time={(localTime + (current.start - current.sectionStart) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} rate={previewRate} />}
                 {current && overlays?.map(({ layer, key, start, next }) => {
                   const at = Math.min(time - current.sectionStart, sections[current.index].durationMs - 1) - layer.startMs;
                   const asset = byId.get(layer.assetId);
@@ -556,10 +567,12 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                           timeMs: at + layer.inMs,
                           endMs: layer.inMs + layer.durationMs,
                           muted: !layer.sound || !!audio,
+                          volume: volume.previewGain(current.owner, layer.id, layer.volume),
                           onDuration: measureUnknownDuration(asset),
                         }}
                         next={next && nextAsset?.kind === "video" ? {
                           url: sourceUrl(mediaDir, nextAsset), originMs: next.start - next.layer.inMs, timeMs: next.layer.inMs,
+                          volume: (next.layer.volume ?? 100) / 100,
                         } : undefined}
                         playing={playing}
                         rate={previewRate}
@@ -653,9 +666,6 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               <select aria-label="클립 위치" disabled={busy} value={frame.x+","+frame.y} onChange={e => {const [x,y]=e.target.value.split(",").map(Number); setFrame({x,y});}}>
                 {[["50,50","중앙"],["0,0","왼쪽 위"],["100,0","오른쪽 위"],["0,100","왼쪽 아래"],["100,100","오른쪽 아래"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>
               {byId.get(selected.assetId)?.kind === "video" && <span className="panel-meta">소스 {sourceTime(selected.inMs)}–{sourceTime(videoRange(selected,selected.durationMs,byId.get(selected.assetId)?.durationMs ?? measured[selected.assetId]).outMs)}</span>}
-              {byId.get(selected.assetId)?.hasAudio && <button className="button compact" aria-pressed={!selected.muted} disabled={busy}
-                onClick={() => changeItems(items.map(c => c.id === selected.id ? {...c,muted:!c.muted} : c))}>
-                {selected.muted ? "원본 소리 꺼짐" : "원본 소리 켜짐"}</button>}
               {byId.get(selected.assetId)?.kind === "image" && <label>표시 시간 <input aria-label="이미지 표시 시간(초)" type="number" min="0.1" step="0.1"
                 key={selected.id+":"+selected.durationMs} disabled={busy} defaultValue={selected.durationMs/1000}
                 onKeyDown={e=>{if(e.key === "Enter") e.currentTarget.blur();}} onBlur={e=>{
@@ -666,6 +676,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                 }}/> 초</label>}
               {([-1,1] as const).map(d=><button key={d} className="button compact" disabled={busy || !peers[index+d]}
                 aria-label={d<0 ? "클립을 앞으로 이동" : "클립을 뒤로 이동"} onClick={() => void dropItem(selected.track,0,selected,peers[index+d].id,d>0)}>{d<0 ? "←" : "→"}</button>)}
+            </>}
+            {volume.key && <>
+              {volumeClip && <button className="button compact" aria-pressed={!volumeClip.muted} disabled={busy}
+                onClick={() => changeItems(items.map(c => c.id === volumeClip.id ? { ...c, muted: !c.muted } : c))}>
+                {volumeClip.muted ? "원본 소리 꺼짐" : "원본 소리 켜짐"}</button>}
+              <ClipVolumeControl key={JSON.stringify([scene?.id, volumeId])} version={volume.key}
+                value={volume.value} disabled={busy} preview={volume.preview} save={volume.save} />
+              {volumeClip && working?.audio && <span className="panel-meta">구간에 연결한 음성 사용 중</span>}
             </>}
           </div>}
           <div className="timeline-zoom" role="group" aria-label="타임라인 확대 및 축소">

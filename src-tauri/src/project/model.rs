@@ -1,3 +1,4 @@
+use super::clip_volume::ClipVolume;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -93,6 +94,8 @@ pub(crate) struct SceneClip {
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Overlay {
+    #[serde(default, skip_serializing_if = "ClipVolume::is_original")]
+    pub volume: ClipVolume,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -196,6 +199,18 @@ impl SceneSettings {
 pub(crate) struct Placement {
     pub asset_id: Uuid,
     pub in_ms: u64,
+    #[serde(default, skip_serializing_if = "ClipVolume::is_original")]
+    pub volume: ClipVolume,
+}
+
+impl Placement {
+    pub(super) fn new(asset_id: Uuid, in_ms: u64) -> Self {
+        Self {
+            asset_id,
+            in_ms,
+            volume: ClipVolume::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
