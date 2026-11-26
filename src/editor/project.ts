@@ -68,9 +68,10 @@ export type NewAssRow = { templateLine: number; text: string };
 export type SceneTool = { type: "deleteCaption"; startMs: number; endMs: number } | { type: "addCaption"; atMs: number; text: string } | { type: "editAssRows"; edits: (CaptionCue & {line:number})[]; additions?: NewAssRow[] } | { type: "removeAssTrack" } | { type: "setAssTrack"; name: string; source: string } | { type: "setCaptionCues"; cues: CaptionCue[] } | { type: "duplicateClip"; clipId: string };
 
 export type CutDisposition = "discard" | "library";
-export type ClipEdit =
-  | { type: "splitClip"; clipId: string; atMs: number }
+export type CutRangeEdit =
+  | { type: "deleteTrackRange"; track: number; startMs: number; endMs: number }
   | { type: "cutClipRange"; disposition: CutDisposition; range: { clipId: string; startMs: number; endMs: number }; folderId?: string | null };
+export type ClipEdit = { type: "splitClip"; clipId: string; atMs: number } | CutRangeEdit;
 
 export type Edit =
   | { type: "setBgm"; expected: BgmClip[]; clips: BgmClip[] }
@@ -252,8 +253,12 @@ export function useProject() {
   }
 
   async function exportMp4() {
-    const saved = await run("MP4 내보내는 중", () => invoke<boolean>("project_export"));
-    if (saved) setNotice({ text: "MP4 편집본을 저장했습니다." });
+    const encoders = { nvenc: "NVIDIA GPU", qsv: "Intel GPU", amf: "AMD GPU", cpu: "CPU" };
+    type ExportReport = { encoder: keyof typeof encoders; rendered: number; reused: number };
+    const report = await run("MP4 내보내는 중", () => invoke<ExportReport | false>("project_export", { withReport: true }));
+    if (report) setNotice({
+      text: `MP4 편집본을 저장했습니다. ${encoders[report.encoder]} · 새로 렌더링한 조각 ${report.rendered}개 · 재사용한 조각 ${report.reused}개`,
+    });
   }
 
   function saveClip(sceneId: string, expected: number, clipId: string, folderId: string | null = null) {

@@ -45,7 +45,8 @@ server.registerTool("workspace_guide", {
 const sceneId = z.string().uuid().describe("ID from timeline");
 const expected = z.number().int().nonnegative().describe("Current scene revision");
 const atMs = z.number().int().nonnegative().describe("Time in milliseconds from scene start");
-const cue = z.object({ startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(), text: z.string().min(1) });
+const captionText = z.string().min(1).describe("The entire caption, with a newline character between display lines. All lines share this caption's timing.");
+const cue = z.object({ startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(), text: captionText });
 function tool(action, description, inputSchema) {
   server.registerTool(action, { description, inputSchema }, async args => {
     try {
@@ -87,11 +88,17 @@ const clipMs = z.number().int().nonnegative().describe("Milliseconds from the cl
 tool("split_clip", "Split a video or image clip at one time and keep both parts on the timeline. No media file is created. Read scene before editing and again for the new clip IDs. Undoable.", {
   ...editClip, clipId, atMs: clipMs
 });
-tool("cut_clip_range", "Remove the half-open interval [startMs, endMs) from a main or overlay video clip and join the remaining parts. Leave at least 100 ms on both sides, with both cut points inside the visible video. Choose discard to remove only from the timeline, or library to also save the removed footage as a new MP4. The source file is preserved. Undoable timeline edit.", {
+tool("cut_clip_range", "Cut a clip-relative interval [startMs, endMs) from one video clip. Leave at least 100 ms on both sides, with both cut points inside the visible video. Choose library to save the cut footage as a new MP4, or discard to remove it from the timeline. For scene-relative deletions across clip edges, use delete_track_range. Undoable.", {
   ...editClip,
   range: z.object({ clipId, startMs: clipMs, endMs: clipMs }).strict(),
   disposition: z.enum(["discard", "library"]),
   folderId: z.string().uuid().optional().describe("Destination bin folder from timeline for library cuts. Omit to save at the bin root.")
+});
+tool("delete_track_range", "Delete a scene-relative interval [startMs, endMs) on one visual track, including across clip boundaries. Fully covered clips are removed. Each surviving piece must meet the clip minimum (normally 100 ms). Following clips touching the cut move together up to the next gap. Source files are preserved. Undoable as one edit. Read scene for track numbers and the current revision.", {
+  ...editClip,
+  track: z.number().int().min(0).max(0xffffffff).describe("0 = main visual track. For overlays use scene.overlays[].track, or its 1-based array index if track is absent."),
+  startMs: atMs,
+  endMs: z.number().int().positive().describe("Exclusive end in milliseconds from scene start, greater than startMs and at most the scene duration.")
 });
 tool("rename_scene", "Rename a timeline scene. Read its revision from timeline first. An empty name restores the default numbered label. Undoable.", {
   sceneId, expected, name: z.string().describe("New single-line scene name")
@@ -103,9 +110,9 @@ tool("captions", "Set the final complete timed caption list through the editor's
   sceneId, expected, cues: z.array(cue), atMs: atMs.optional()
 });
 tool("seek", "Show the scene and move the live editor playhead.", { sceneId, atMs });
-tool("add_caption", "Insert a caption at the scene playhead time using the editor's undoable insertion and existing subtitle style.", { sceneId, expected, atMs, text: z.string().min(1) });
+tool("add_caption", "Insert one caption at the scene playhead time using the editor's undoable insertion and existing subtitle style. Send the full multiline text in one call.", { sceneId, expected, atMs, text: captionText });
 tool("delete_caption", "Delete one timeline caption block by its exact scene-relative start and end times. ASS text lines grouped in this block are removed together. Undoable.", { sceneId, expected, startMs: atMs, endMs: z.number().int().positive() });
-tool("import_ass", "Import an existing UTF-8 ASS subtitle file into the chosen scene, preserving styles, drawings and effects. Replaces its current subtitle track and is undoable.", { sceneId, expected, path: z.string().min(1) });
+tool("import_ass", "Import an existing UTF-8 ASS subtitle file into the chosen scene, preserving styles, drawings and effects. When authoring the file, put each multiline caption in one Dialogue event with \\N between its display lines. Replaces the current subtitle track and is undoable.", { sceneId, expected, path: z.string().min(1) });
 tool("register_output", "Register a finished local image, video or audio file in the intended Cutroom project. Get projectId and optional folderId from timeline before starting generation. Use one jobId per output and reuse it on retry. Write completed files at fresh paths under mediaDirectory; its subfolders are the source bin folders and are indexed automatically. Registering the same path binds the discovered asset to the job.", {
   projectId: z.string().uuid(), jobId: z.string().uuid(), path: z.string().min(1), title: z.string().min(1).optional(), folderId: z.string().uuid().optional()
 });

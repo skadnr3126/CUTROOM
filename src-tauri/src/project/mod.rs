@@ -13,6 +13,7 @@ mod composition_layout;
 pub(crate) mod control;
 mod cut_range;
 mod drop_tree;
+mod encoder_probe;
 #[cfg(windows)]
 pub(crate) mod file_drag;
 mod files;
@@ -28,6 +29,7 @@ mod render;
 mod scene_tools;
 mod source_work;
 mod split_clip;
+mod track_delete;
 #[cfg(test)]
 mod tests;
 mod undo;
@@ -75,6 +77,13 @@ pub(crate) struct ProjectView {
     rename_all_fields = "camelCase"
 )]
 pub(crate) enum Edit {
+    DeleteTrackRange {
+        scene_id: Uuid,
+        expected: u32,
+        track: u32,
+        start_ms: u64,
+        end_ms: u64,
+    },
     SplitClip {
         scene_id: Uuid,
         expected: u32,
@@ -347,6 +356,13 @@ impl ProjectStore {
             let mut cuts_to_save = Vec::new();
             let previous_order = (!project.bgm.is_empty() && !undoing).then(|| undo::order(project));
             match edit {
+                Edit::DeleteTrackRange {
+                    scene_id, expected, track, start_ms, end_ms,
+                } => {
+                    inverse = Some(track_delete::apply(
+                        project, scene_id, expected, track, start_ms, end_ms,
+                    )?);
+                }
                 Edit::SplitClip { scene_id, expected, clip_id, at_ms } => {
                     inverse = Some(split_clip::apply(project, scene_id, expected, clip_id, at_ms)?);
                 }
@@ -724,10 +740,12 @@ pub(crate) async fn project_save_clip(
 }
 
 #[tauri::command]
-pub(crate) async fn project_export(app: AppHandle, store: ProjectStore) -> Result<bool, String> {
+pub(crate) async fn project_export(
+    app: AppHandle,
+    store: ProjectStore,
+    with_report: Option<bool>,
+) -> Result<serde_json::Value, String> {
     run_io(move || {
-        let ffmpeg = files::find_tool(&store.app_data, "ffmpeg")
-            .ok_or("FFmpeg를 찾을 수 없습니다. 설치한 뒤 컷룸을 다시 열어 주세요.")?;
         let project = store.load()?;
         if project.scenes.is_empty() {
             return Err("내보낼 대본 구간을 추가해 주세요.".to_owned());
@@ -739,14 +757,19 @@ pub(crate) async fn project_export(app: AppHandle, store: ProjectStore) -> Resul
             .set_file_name("컷룸 편집본.mp4")
             .blocking_save_file()
         else {
-            return Ok(false);
+            return Ok(serde_json::json!(false));
         };
         let path = file
             .into_path()
             .map_err(|_| "이 기기의 저장 위치를 선택해 주세요.")?;
         let path = path.with_extension("mp4");
-        render::export(&ffmpeg, &store.media_dir(), &project, &path)?;
-        Ok(true)
+        let report = store.export_mp4(&project, &path, 0..project.scenes.len(), &[])?;
+        // Existing IPC callers receive the original saved/cancelled boolean.
+        Ok(if with_report == Some(true) {
+            serde_json::json!(report)
+        } else {
+            serde_json::json!(true)
+        })
     })
     .await
 }

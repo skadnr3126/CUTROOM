@@ -1,4 +1,5 @@
 use super::{
+    caption_track::normalize_line_endings,
     model::{Project, SceneClip, SceneSettings},
     undo::Inverse,
 };
@@ -74,11 +75,9 @@ impl SceneTool {
                 }
                 scene.revision += 1;
             }
-            Self::AddCaption { at_ms, text } => {
-                if text.trim().is_empty()
-                    || text.contains(['\r', '\0'])
-                    || at_ms >= before.duration_ms
-                {
+            Self::AddCaption { at_ms, mut text } => {
+                normalize_line_endings(&mut text);
+                if text.trim().is_empty() || text.contains('\0') || at_ms >= before.duration_ms {
                     return Err("구간 안의 재생 위치와 자막 문구를 확인해 주세요.".into());
                 }
                 if let Some(track) = scene.settings.caption_ass.as_mut() {
@@ -139,7 +138,8 @@ impl SceneTool {
             {
                 return Err("ASS 자막 편집을 사용해 주세요.".into());
             }
-            Self::SetCaption { text } => {
+            Self::SetCaption { mut text } => {
+                normalize_line_endings(&mut text);
                 if text.contains('\0') {
                     return Err("자막에 사용할 수 없는 문자가 있습니다.".into());
                 }
@@ -152,7 +152,10 @@ impl SceneTool {
                 scene.settings.caption = text;
                 scene.revision += 1;
             }
-            Self::SetCaptionCues { cues } => {
+            Self::SetCaptionCues { mut cues } => {
+                for cue in &mut cues {
+                    normalize_line_endings(&mut cue.text);
+                }
                 super::caption_track::validate(&cues, before.duration_ms)?;
                 if before.caption.is_empty() && before.caption_cues == cues {
                     return Ok(None);

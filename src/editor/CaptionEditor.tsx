@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { CaptionTextField } from "./CaptionTextField";
 import { cueError, insertCaption, type CaptionDraft } from "./captionCues";
 import type { CaptionCue, Scene } from "./project";
 import { sourceTime } from "./videoTrim";
@@ -63,17 +64,9 @@ export function CaptionEditor({ title, scene, draft, busy: projectBusy, change, 
           <input type="number" step="0.001" min="0" max={scene.durationMs / 1000}
             disabled={busy} key={index + field} value={Number.isFinite(cue[field]) ? cue[field] / 1000 : ""}
             onChange={e => update({ [field]: Math.round(e.target.valueAsNumber * 1000) })} /></label>)}</div>
-      <textarea ref={input} aria-label="자막 내용" placeholder="화면에 표시할 문구" rows={3} disabled={busy}
-        value={cue.text} onChange={e => update({ text: e.target.value })} />
+      <CaptionTextField inputRef={input} label="자막 내용" placeholder="화면에 표시할 문구" disabled={busy}
+        value={cue.text} onChange={text => update({ text })} />
       <div className="cue-nav">
-        <button className="text-button" disabled={busy} onClick={()=>{
-          update({text:cue.text+"\n"});
-          input.current?.focus();
-          requestAnimationFrame(()=>{
-            const el=input.current;
-            if(el)el.setSelectionRange(el.value.length,el.value.length);
-          });
-        }}>＋ 줄 추가</button>
         <button className="text-button" disabled={busy || !scene.text} onClick={() => update({ text: scene.text })}>대본 내용 가져오기</button>
         <button className="text-button" disabled={busy} onClick={() => {
           const list = cues.filter((_, i) => i !== index);

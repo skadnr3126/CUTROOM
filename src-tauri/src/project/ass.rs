@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 mod flow_rows;
+mod multiline_layout;
 mod new_rows;
 pub(crate) use new_rows::NewRow;
 
@@ -188,12 +189,20 @@ pub(crate) fn ass_rows(source: String) -> Result<Vec<Row>, String> {
 #[tauri::command]
 pub(crate) fn ass_update(
     source: String,
-    edits: Vec<Row>,
+    mut edits: Vec<Row>,
     duration_ms: u64,
     additions: Option<Vec<NewRow>>,
 ) -> Result<String, String> {
+    for edit in &mut edits {
+        super::caption_track::normalize_line_endings(&mut edit.text);
+    }
     let (source, edits) = match additions {
-        Some(rows) if !rows.is_empty() => new_rows::expand(&source, edits, rows)?,
+        Some(mut rows) if !rows.is_empty() => {
+            for row in &mut rows {
+                super::caption_track::normalize_line_endings(&mut row.text);
+            }
+            new_rows::expand(&source, edits, rows)?
+        }
         _ => (source, edits),
     };
     let parsed = events(&source)?;
@@ -221,11 +230,20 @@ pub(crate) fn ass_update(
             return Err("자막 문구와 구간 안의 시작·끝 시간(0.01초 단위)을 확인해 주세요.".into());
         }
         changed.insert(e.line, (edit.start_ms, edit.end_ms));
+        let prefix = multiline_layout::paired_prefix(&source, &parsed, e, &edit.text, |line| {
+            edits
+                .iter()
+                .any(|r| r.line == line && r.text.trim().is_empty())
+        });
         lines[e.line] = rewrite(
             e,
             edit.start_ms,
             edit.end_ms,
-            &format!("{}{}", e.prefix, edit.text.replace('\n', "\\N")),
+            &format!(
+                "{}{}",
+                prefix.as_deref().unwrap_or(e.prefix),
+                edit.text.replace('\n', "\\N")
+            ),
         );
     }
     // A panel spanning exactly a group of captions follows the group's outer edges.
@@ -409,7 +427,13 @@ pub(super) fn insert(source: &str, at: u64, duration: u64, text: &str) -> Result
         };
         rewrite(&fallback, from, to, &body)
     } else {
-        rewrite(template, from, to, &format!("{}{body}", template.prefix))
+        let prefix = multiline_layout::paired_prefix(source, &parsed, template, text, |_| true);
+        rewrite(
+            template,
+            from,
+            to,
+            &format!("{}{body}", prefix.as_deref().unwrap_or(template.prefix)),
+        )
     };
     // Place each clone next to its template, honoring changes of Format inside the file.
     let insert_after = flow_rows::groups(source)

@@ -2,7 +2,7 @@
 use super::{
     Edit, ProjectStore, bgm, caption_track::CaptionCue,
     cut_range::{ClipRange, CutDisposition},
-    files, render, scene_tools::SceneTool,
+    files, scene_tools::SceneTool,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,6 +50,14 @@ pub(crate) enum Command {
         range: ClipRange,
         disposition: CutDisposition,
         folder_id: Option<Uuid>,
+    },
+    DeleteTrackRange {
+        project_id: Uuid,
+        scene_id: Uuid,
+        expected: u32,
+        track: u32,
+        start_ms: u64,
+        end_ms: u64,
     },
     RenameScene {
         scene_id: Uuid,
@@ -198,6 +206,11 @@ pub(crate) fn execute(
         Command::CutClipRange { project_id, scene_id, expected, range, disposition, folder_id } => {
             return edit_clip(app, store, project_id, scene_id, Edit::CutClipRange {
                 scene_id, expected, range, disposition, folder_id,
+            });
+        }
+        Command::DeleteTrackRange { project_id, scene_id, expected, track, start_ms, end_ms } => {
+            return edit_clip(app, store, project_id, scene_id, Edit::DeleteTrackRange {
+                scene_id, expected, track, start_ms, end_ms,
             });
         }
         Command::RenameScene {
@@ -390,10 +403,8 @@ pub(crate) fn execute(
             {
                 return Err("새 MP4 파일의 절대 경로를 지정하세요.".into());
             }
-            let ff =
-                files::find_tool(&store.app_data, "ffmpeg").ok_or("FFmpeg를 찾을 수 없습니다.")?;
-            render::export_range(&ff, &store.media_dir(), &project, &path, &[], index..index + 1)?;
-            return Ok(json!({"path":path,"revision":expected}));
+            let report = store.export_mp4(&project, &path, index..index + 1, &[])?;
+            return Ok(json!({"path":path,"revision":expected,"render":report}));
         }
     };
     if edited.is_some() {

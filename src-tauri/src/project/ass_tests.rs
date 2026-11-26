@@ -69,11 +69,11 @@ fn deleting_timeline_caption_is_undoable_and_empty_ass_reuses_its_design() {
     assert!(!source.contains("다른 줄") && !source.contains("처음"));
     assert!(ass_rows(source.clone()).unwrap().is_empty());
     assert!(super::ass::ass_ranges(source.clone()).unwrap().is_empty());
-    let replaced = super::ass::insert(source, 0, 4000, "다시 추가").unwrap();
+    let replaced = super::ass::insert(source, 0, 4000, "다시 추가\n둘째 줄").unwrap();
     let rows = ass_rows(replaced.clone()).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].text, "다시 추가");
-    assert!(replaced.contains(r"{\pos(600,550)\fad(100,150)}다시 추가"));
+    assert_eq!(rows[0].text, "다시 추가\n둘째 줄");
+    assert!(replaced.contains(r"{\pos(600,550)\fad(100,150)}다시 추가\N둘째 줄"));
     assert!(replaced.contains("0:00:00.00,0:00:02.00,Panel"));
     let restored = store
         .edit(
@@ -334,9 +334,14 @@ fn add_caption_from_playhead_keeps_style_timing_and_undo() {
     };
     let add = |ms, text| json!({"type":"addCaption","atMs":ms,"text":text});
     edit(0, json!({"type":"setCaption","text":"원래 문구"})).unwrap();
-    let plain = edit(1, add(0, "첫 자막")).unwrap();
-    let cues = &plain.project.scenes[0].settings.caption_cues;
-    assert_eq!((&*cues[0].text, &*cues[1].text), ("첫 자막", "원래 문구"));
+    edit(1, add(0, "첫 자막\r\n둘째 줄")).unwrap();
+    let reopened = ProjectStore::new(temp.path().into()).load().unwrap();
+    let cues = &reopened.scenes[0].settings.caption_cues;
+    assert_eq!(cues.len(), 2);
+    assert_eq!(
+        (&*cues[0].text, &*cues[1].text),
+        ("첫 자막\n둘째 줄", "원래 문구")
+    );
     assert_eq!(cues[0].end_ms, cues[1].start_ms);
     edit(
         2,
@@ -345,7 +350,7 @@ fn add_caption_from_playhead_keeps_style_timing_and_undo() {
     .unwrap();
     assert!(edit(2, add(1000, "중복")).is_err());
     assert!(edit(3, add(1000, "  ")).is_err());
-    let saved = edit(3, add(1005, "직접 입력\n둘째 줄")).unwrap();
+    let saved = edit(3, add(1005, "직접 입력\r\n둘째 줄")).unwrap();
     let source = &saved.project.scenes[0]
         .settings
         .caption_ass
@@ -406,7 +411,7 @@ fn ass_edit_preserves_design_roundtrip_and_undo() {
     let mut rows = ass_rows(SOURCE.into()).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "처음,\n둘째 줄");
-    rows[0].text = "편집한\n마지막 줄".into();
+    rows[0].text = "편집한\r\n마지막 줄".into();
     rows[0].start_ms = 650;
     rows[0].end_ms = 1900;
     let saved = edit(scene_tool(1, json!({"type":"editAssRows","edits":rows}))).unwrap();
@@ -418,6 +423,9 @@ fn ass_edit_preserves_design_roundtrip_and_undo() {
         .unwrap()
         .source;
     assert!(changed.contains(r"{\pos(600,550)\fad(100,150)}편집한\N마지막 줄"));
+    let edited_rows = ass_rows(changed.clone()).unwrap();
+    assert_eq!(edited_rows.len(), 1);
+    assert_eq!(edited_rows[0].text, "편집한\n마지막 줄");
     assert!(changed.contains("0:00:00.65,0:00:01.90,Panel"));
     assert!(edit(scene_tool(1, json!({"type":"removeAssTrack"}))).is_err());
     assert!(
@@ -537,14 +545,22 @@ fn ass_renders_with_scene_time_across_clips() {
             .unwrap()
         })
         .collect();
+    // Create one two-line caption through the same insertion used by the playhead dialog.
+    let empty = super::ass::delete(SOURCE, 500, 1700).unwrap();
+    let source = super::ass::insert(&empty, 500, 1700, "I\nMMMMMMMM").unwrap();
+    assert_eq!(ass_rows(source.clone()).unwrap().len(), 1);
     s.caption_ass = Some(AssTrack {
         name: "test.ass".into(),
-        source: SOURCE.into(),
+        source: source.clone(),
     });
     let out = temp.path().join("out.mp4");
     render::export(&ff, temp.path(), &project, &out).unwrap();
     let png = temp.path().join("preview.png");
-    std::fs::write(&png, super::ass_preview::sheet(&ff, SOURCE, 36, 1).unwrap()).unwrap();
+    std::fs::write(
+        &png,
+        super::ass_preview::sheet(&ff, &source, 36, 1).unwrap(),
+    )
+    .unwrap();
     let preview = Command::new(&ff)
         .args(["-v", "error", "-i"])
         .arg(png)
@@ -571,6 +587,25 @@ fn ass_renders_with_scene_time_across_clips() {
             .unwrap();
         assert!(frame.status.success());
         if time == "1.2" {
+            for (pixels, channels) in [(&preview.stdout, 4), (&frame.stdout, 3)] {
+                let ink: Vec<_> = pixels
+                    .chunks_exact(1280 * channels)
+                    .map(|row| {
+                        row.chunks_exact(channels)
+                            .filter(|p| p.iter().all(|c| *c > 180))
+                            .count()
+                    })
+                    .collect();
+                let bands: Vec<_> = ink
+                    .split(|&w| w == 0)
+                    .filter_map(|r| r.iter().max())
+                    .collect();
+                assert_eq!(bands.len(), 2, "expected two visible lines: {bands:?}");
+                assert!(
+                    bands[1] > bands[0],
+                    "second line should be wider: {bands:?}"
+                );
+            }
             let mut diff = 0_u64;
             for (rgb, rgba) in frame
                 .stdout

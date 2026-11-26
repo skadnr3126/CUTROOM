@@ -63,25 +63,10 @@ fn hardware_h264(ffmpeg: &Path) -> Option<&'static [&'static str]> {
     {
         return *options;
     }
-    // An encoder can be compiled into FFmpeg even when the device/driver cannot use it.
-    let options = CANDIDATES.iter().copied().find(|options| {
-        media_command(ffmpeg)
-            .args([
-                "-nostdin",
-                "-v",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=s=320x240:r=30",
-                "-frames:v",
-                "2",
-            ])
-            .args(*options)
-            .args(["-f", "null", "-"])
-            .output()
-            .is_ok_and(|result| result.status.success())
-    });
+    let options = CANDIDATES
+        .iter()
+        .copied()
+        .find(|args| super::encoder_probe::supports(ffmpeg, "320x240", args));
     *cache = Some((ffmpeg.to_owned(), options));
     options
 }

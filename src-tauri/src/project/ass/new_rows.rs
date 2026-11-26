@@ -11,7 +11,7 @@ pub(crate) struct NewRow {
 
 // Fixed-position ASS events opt out of libass collision handling. Shift both
 // ends of a moving caption together so its motion and timing stay intact.
-fn position(prefix: &str) -> Option<(std::ops::Range<usize>, Vec<&str>, f64)> {
+pub(super) fn position(prefix: &str) -> Option<(std::ops::Range<usize>, Vec<&str>, f64)> {
     for tag in [r"\pos(", r"\move("] {
         if let Some(start) = prefix.find(tag) {
             let start = start + tag.len();

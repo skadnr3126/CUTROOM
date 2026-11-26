@@ -1,11 +1,24 @@
 use std::{
-    env, fs, io,
+    env, io,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use tempfile::{NamedTempFile, tempdir};
+#[cfg(test)]
+use std::fs;
+use tempfile::NamedTempFile;
+#[cfg(test)]
+use tempfile::tempdir;
 mod bgm_mix;
+mod cache;
+mod encoder;
+mod export;
+#[cfg(test)]
+mod export_tests;
+
+use encoder::Encoder;
+#[cfg(test)]
+use export::Export;
 
 use super::{
     composition_layout::{self, CaptionChange, Layout, VisualKeyframe},
@@ -13,7 +26,7 @@ use super::{
     model::{Kind, Placement, Project, SceneSettings},
 };
 
-#[derive(Clone, Copy, Default, PartialEq, serde::Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum PhotoMotion {
     #[default]
@@ -22,7 +35,7 @@ pub(super) enum PhotoMotion {
     ZoomOut,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, serde::Serialize)]
 pub(super) struct SceneStyle<'a> {
     pub layout: Layout,
     pub keyframes: &'a [VisualKeyframe],
@@ -32,32 +45,24 @@ pub(super) struct SceneStyle<'a> {
     pub center_text: bool,
 }
 
+#[cfg(test)]
 pub(super) fn export(
     ffmpeg: &Path,
     media: &Path,
     project: &Project,
     destination: &Path,
 ) -> Result<(), String> {
-    export_styled(ffmpeg, media, project, destination, &[])
-}
-
-pub(super) fn export_styled(
-    ffmpeg: &Path,
-    media: &Path,
-    project: &Project,
-    destination: &Path,
-    styles: &[SceneStyle],
-) -> Result<(), String> {
     export_range(
         ffmpeg,
         media,
         project,
         destination,
-        styles,
+        &[],
         0..project.scenes.len(),
     )
 }
 
+#[cfg(test)]
 pub(super) fn export_range(
     ffmpeg: &Path,
     media: &Path,
@@ -66,56 +71,15 @@ pub(super) fn export_range(
     styles: &[SceneStyle],
     range: std::ops::Range<usize>,
 ) -> Result<(), String> {
-    if project.scenes.is_empty() {
-        return Err("내보낼 대본 구간을 추가해 주세요.".to_owned());
+    Export {
+        ffmpeg,
+        media,
+        project,
+        styles,
+        cache_root: None,
     }
-    let staging = tempdir().map_err(|_| "내보내기 작업 폴더를 만들 수 없습니다.")?;
-    let work = staging.path();
-    let font = caption_font()
-        .map(|font| fs::copy(font, work.join("caption.ttf")).is_ok())
-        .unwrap_or(false);
-    let mut concat = String::new();
-    let start_ms: u64 = project.scenes[..range.start]
-        .iter()
-        .map(|s| s.settings.duration_ms)
-        .sum();
-    let mut end_ms = start_ms;
-    for index in range {
-        let scene = &project.scenes[index];
-        end_ms += scene.settings.duration_ms;
-        project.validate_settings(&scene.settings)?;
-        let mut elapsed_ms = 0;
-        if let Some(track) = &scene.settings.caption_ass {
-            fs::write(work.join("scene.ass"), &track.source).map_err(|e| e.to_string())?;
-        }
-        for (piece, settings) in scene.settings.segments().iter().enumerate() {
-            let file = format!("part-{index:05}-{piece}.mp4");
-            render_scene(
-                ffmpeg,
-                work,
-                media,
-                project,
-                settings,
-                font,
-                styles.get(index).copied().unwrap_or_default(),
-                &file,
-                scene.settings.caption_ass.as_ref().map(|_| elapsed_ms),
-            )
-            .map_err(|error| format!("구간 {}을 렌더링할 수 없습니다. {error}", index + 1))?;
-            elapsed_ms += settings.duration_ms;
-            concat.push_str(&format!("file '{file}'\n"));
-            if !project.bgm.is_empty() {
-                // Anchor the next piece to the editor clock, including when AAC or
-                // video frame boundaries rounded the intermediate MP4 duration.
-                concat.push_str(&format!("duration {}\n", seconds(settings.duration_ms)));
-            }
-        }
-    }
-    fs::write(work.join("segments.txt"), concat)
-        .map_err(|_| "렌더링 구간을 정리할 수 없습니다.")?;
-    join_segments(ffmpeg, work, destination, |cmd| {
-        bgm_mix::configure(cmd, media, project, start_ms..end_ms)
-    })
+    .write_with_encoder(destination, range, Encoder::Cpu)
+    .map(|_| ())
 }
 
 fn join_segments(
@@ -195,7 +159,7 @@ fn join_segments_preserves_existing_files_and_cleans_up_failed_exports() {
     assert_eq!(fs::read_dir(folder.path()).unwrap().count(), 1);
 }
 
-fn render_scene(
+fn scene_command(
     ffmpeg: &Path,
     work: &Path,
     media: &Path,
@@ -205,7 +169,8 @@ fn render_scene(
     style: SceneStyle,
     output: &str,
     ass_offset: Option<u64>,
-) -> Result<(), String> {
+    encoder: Encoder,
+) -> Result<Command, String> {
     let duration = seconds(scene.duration_ms);
     let trim = scene
         .visual
@@ -393,7 +358,7 @@ fn render_scene(
         audio_filter = audio_filter,
         duration = duration,
     );
-    run(command.args([
+    command.args([
         "-filter_complex_threads",
         "2",
         "-filter_complex",
@@ -404,24 +369,10 @@ fn render_scene(
         "[audio]",
         "-t",
         &duration,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "fast",
-        "-crf",
-        "19",
-        "-pix_fmt",
-        "yuv420p",
-        "-threads",
-        "4",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "160k",
-        "-ar",
-        "48000",
-        output,
-    ]))
+    ]);
+    encoder.add_output_args(&mut command);
+    command.args(["-c:a", "aac", "-b:a", "160k", "-ar", "48000", output]);
+    Ok(command)
 }
 
 fn input(command: &mut Command, path: &Path, in_ms: u64) {

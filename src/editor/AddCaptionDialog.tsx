@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { CaptionTextField } from "./CaptionTextField";
 import { sourceTime } from "./videoTrim";
 
 export function AddCaptionDialog({ atMs, stale, save, close }: {
@@ -24,8 +25,8 @@ export function AddCaptionDialog({ atMs, stale, save, close }: {
     onCancel={e => { e.preventDefault(); if (!saving) close(); }}
     onKeyDown={e => { if (e.ctrlKey && e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); } }}>
     <h2 id="add-caption-title">자막 추가 <small>구간 {sourceTime(atMs)}</small></h2>
-    <textarea aria-label="새 자막 문구" ref={input} rows={3} value={text} disabled={saving}
-      placeholder="여기에 자막을 입력하세요" onChange={e => setText(e.target.value)} />
+    <CaptionTextField label="새 자막 문구" inputRef={input} value={text} disabled={saving}
+      placeholder="여기에 자막을 입력하세요" onChange={setText} />
     <small>기존 자막 위에 추가하면 두 문구가 순서대로 나오도록 표시 시간을 나눕니다.</small>
     {(stale || error) && <p role="alert">{stale ? "구간이 변경되었습니다. 닫고 다시 열어 주세요." : error}</p>}
     <footer><button className="button compact" disabled={saving} onClick={close}>취소</button>

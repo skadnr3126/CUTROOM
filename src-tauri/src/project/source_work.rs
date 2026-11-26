@@ -203,8 +203,6 @@ impl ProjectStore {
             });
         }
         let composition = recipe.composition(&project)?;
-        let ffmpeg =
-            find_tool(&self.app_data, "ffmpeg").ok_or("편집본을 만들려면 FFmpeg가 필요합니다.")?;
         let ffprobe = find_tool(&self.app_data, "ffprobe");
         let staging = tempdir().map_err(|_| "편집본을 만들 작업 공간을 열 수 없습니다.")?;
         let output = staging.path().join("source.mp4");
@@ -220,7 +218,7 @@ impl ProjectStore {
                 center_text: clip.visual_asset_id.is_none() && recipe.asset_ids.is_empty(),
             })
             .collect();
-        render::export_styled(&ffmpeg, &self.media_dir(), &composition, &output, &styles)?;
+        self.export_mp4(&composition, &output, 0..composition.scenes.len(), &styles)?;
         let mut asset_id = Uuid::nil();
         let view = self.mutate(|project, media, added| {
             if let Some(asset) = project

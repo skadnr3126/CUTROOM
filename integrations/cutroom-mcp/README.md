@@ -23,6 +23,8 @@ codex mcp add cutroom -- (Get-Command node.exe).Source (Resolve-Path integration
 
 `import_ass`에 구간 ID, 읽어 둔 리비전, UTF-8 ASS 파일의 전체 경로를 전달합니다. 컷룸이 해당 구간에 파일 내용을 보관합니다. 컷룸의 **ASS 자막 편집**에서 문구와 시간을 고치거나 편집한 ASS 파일을 따로 저장할 수 있습니다. MP4 출력에는 기존 `export_scene`을 사용합니다.
 
+두 줄을 함께 보여 줄 때는 ASS 파일의 `Dialogue:` 이벤트 하나에 `첫째 줄\N둘째 줄`로 작성합니다. `add_caption`이나 `captions`로 문구를 전달할 때는 JSON 문자열 하나에 `"text": "첫째 줄\n둘째 줄"`처럼 줄바꿈을 넣습니다. 두 줄의 시작·끝 시간을 컷룸에서 함께 조절할 수 있습니다.
+
 ## 외부에서 생성한 소스 등록
 
 1. 생성을 시작할 때 `timeline`을 호출해 대상 `projectId`, `mediaDirectory`, 보관함의 `folders`를 확인합니다.
@@ -31,13 +33,15 @@ codex mcp add cutroom -- (Get-Command node.exe).Source (Resolve-Path integration
 
 ## 편집 흐름
 
-“이 클립을 3초에서 둘로 나눠 줘”는 `split_clip`, “이 클립의 3~5초를 잘라서 보관함에 저장해 줘”는 `cut_clip_range`의 `library` 옵션으로 처리합니다. 그 부분을 타임라인에서만 덜어내려면 `discard`를 사용합니다. 두 명령 모두 `timeline`에서 프로젝트 ID를, `scene`에서 현재 리비전과 클립 ID를 먼저 읽습니다. 시간은 선택한 클립의 시작 기준입니다. 보관함에 저장한 범위의 소스 ID는 `savedAssetId`로 확인할 수 있습니다.
+“이 구간의 주 영상 트랙에서 3~5초를 지워 줘”는 `delete_track_range`로 처리합니다. `timeline`에서 프로젝트 ID와 대상 구간 ID를, `scene`에서 현재 리비전을 확인하고 `track: 0`, `startMs: 3000`, `endMs: 5000`을 보냅니다. 시간은 구간 시작 기준입니다. 여러 클립에 걸쳐도 한 번에 삭제하고 컷룸에서 한 번에 되돌릴 수 있습니다. 오버레이 트랙은 해당 `overlays` 항목의 `track` 번호를 사용하며, 번호가 생략된 항목은 배열의 첫 항목부터 1로 셉니다. 사용자가 클립을 선택했다면 `get_selection`의 `clip.track`으로 해당 트랙을 확인할 수 있습니다.
+
+“이 클립을 3초에서 둘로 나눠 줘”는 `split_clip`, “이 클립의 3~5초를 잘라서 보관함에 저장해 줘”는 `cut_clip_range`의 `library` 옵션으로 처리합니다. 이 두 명령의 시간은 선택한 클립의 시작 기준입니다. `cut_clip_range`는 한 클립 안에서만 덜어내는 `discard` 옵션도 지원합니다. 보관함에 저장한 MP4의 소스 ID는 `savedAssetId`로 확인할 수 있습니다.
 
 “마지막 구간 이름을 ‘마무리’로 바꿔 줘”, “평딜 구간을 전투 분석 바로 앞으로 옮겨 줘”처럼 요청할 수 있습니다. `rename_scene`은 `timeline`에서 읽은 구간 ID와 리비전, 새 이름을 받습니다. `move_scene`은 이동할 구간 ID와 기준 구간 ID(`targetId`)를 받아 `after: false`이면 바로 앞에, `true`이면 바로 뒤에 배치합니다. 두 작업 모두 컷룸에서 실행 취소할 수 있습니다.
 
 1. `timeline`으로 구간을 찾고 `scene`으로 저장된 자막과 리비전을 읽습니다.
 2. `captions`에 전체 자막 목록과 읽었던 리비전을 보냅니다. 시간은 구간 시작 기준 밀리초입니다. 다른 곳에서 먼저 저장했다면 구간을 다시 읽고 변경할 자막만 반영합니다.
 3. `seek`로 문구가 보이는 시점으로 이동합니다. 컷룸에서 수동으로 고친 뒤에도 `scene`으로 다시 읽을 수 있습니다.
-4. `export_scene`에 리비전과 새 MP4 경로를 보내면 해당 구간을 내보냅니다. 수정 가능한 자막 원본은 컷룸 프로젝트에 저장됩니다.
+4. `export_scene`에 리비전과 새 MP4 경로를 보내면 해당 구간을 내보냅니다. 응답의 `render.encoder`에서 사용한 인코더(`nvenc`, `qsv`, `amf`, `cpu`)를, `render.rendered`와 `render.reused`에서 새로 렌더링한 조각 수와 재사용한 조각 수를 확인할 수 있습니다. 수정 가능한 자막 원본은 컷룸 프로젝트에 저장됩니다.
 
 이미 자막을 입힌 영상은 같은 길이의 무자막 소스를 준비한 뒤 `import_video`와 `replace_video`로 교체할 수 있습니다. 교체는 영상 하나로 구성된 구간을 지원합니다.

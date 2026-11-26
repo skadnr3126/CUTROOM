@@ -9,6 +9,13 @@ pub(crate) struct CaptionCue {
     pub text: String,
 }
 
+// Caption text uses LF in the editor and project model, including text pasted from Windows.
+pub(super) fn normalize_line_endings(text: &mut String) {
+    if text.contains('\r') {
+        *text = text.replace("\r\n", "\n").replace('\r', "\n");
+    }
+}
+
 // Both editors insert at the playhead. At a shared boundary the new cue plays
 // first, leaving at least one tick for the original text.
 pub(super) fn insertion_range(

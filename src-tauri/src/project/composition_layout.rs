@@ -1,10 +1,10 @@
 use std::{fs, path::Path};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const BACKGROUND: &str = "0x151820";
 
-#[derive(Clone, Copy, Default, PartialEq, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) enum Layout {
     #[default]
@@ -15,7 +15,7 @@ pub(super) enum Layout {
     SlideToRight,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct VisualKeyframe {
     time_ms: u64,
@@ -134,7 +134,7 @@ impl Layout {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct CaptionChange {
     pub start_ms: u64,

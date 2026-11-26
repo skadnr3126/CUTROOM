@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CaptionTextField } from "./CaptionTextField";
 import { invoke } from "./projectSession";
-import type { NewAssRow, Scene } from "./project";
+import type { Scene } from "./project";
 import { sourceTime } from "./videoTrim";
 import { useCaptionAutosave } from "./useCaptionAutosave";
 import { readAssRows, type AssRow as Row, type AssTrack as Track } from "./assRows";
@@ -27,8 +28,8 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
   const textInput=useRef<HTMLTextAreaElement>(null);
   const parsed=useAssRows(track);
   const [edits,setEdits]=useState<Record<number,Row>>({});
-  const [added,setAdded]=useState<(NewAssRow & {id:string})[]>([]);
-  const changes=useMemo(()=>({edits:Object.values(edits),additions:added.map(({templateLine,text})=>({templateLine,text}))}),[edits,added]);
+  const [mergedLines,setMergedLines]=useState<Set<number>>(()=>new Set());
+  const changes=useMemo(()=>Object.values(edits),[edits]);
   const [selected,setSelected]=useState<number|undefined>(initialLine);
   const [notice,setNotice]=useState("");
   const [working,setWorking]=useState(false);
@@ -37,20 +38,21 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
   const groups=useMemo(()=>{
     const byStart=new Map<number,Row[]>();
     for(const row of parsed?.rows ?? []){
+      if(mergedLines.has(row.line))continue;
       const group=byStart.get(row.startMs);
       if(group)group.push(row);
       else byStart.set(row.startMs,[row]);
     }
     return byStart;
-  },[parsed]);
+  },[parsed,mergedLines]);
   const originals=parsed?.rows;
   const row=originals?.find(r=>r.line===selected)??originals?.find(r=>r.startMs<=at && at<r.endMs)??originals?.[0];
   const group=row && groups.get(row.startMs);
-  const valid=changes.additions.every(r=>r.text.trim()) && changes.edits.every(r=>
+  const valid=changes.every(r=>
     !r.text.trim() || Number.isFinite(r.startMs) && Number.isFinite(r.endMs) && r.startMs>=0 && r.startMs<r.endMs && r.endMs<=scene.durationMs);
   const autosave=useCaptionAutosave(changes,revision,scene.revision,valid,async(snapshot,expected)=>{
     const source=compiled?.changes===snapshot ? compiled.source :
-      await invoke<string>("ass_update",{source:track.source,...snapshot,durationMs:scene.durationMs});
+      await invoke<string>("ass_update",{source:track.source,edits:snapshot,durationMs:scene.durationMs});
     return save(source,expected);
   });
   const stale=autosave.stale;
@@ -60,10 +62,9 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
   useEffect(()=>{
     let active=true;
     setNotice("");
-    if(!changes.edits.length && !changes.additions.length){setCompiled({changes,source:track.source});preview(track.source);return;}
-    if(changes.additions.some(r=>!r.text.trim())){setNotice("추가한 줄에 문구를 입력해 주세요.");return;}
+    if(!changes.length){setCompiled({changes,source:track.source});preview(track.source);return;}
     const timer=window.setTimeout(()=>{
-      invoke<string>("ass_update",{source:track.source,...changes,durationMs:scene.durationMs})
+      invoke<string>("ass_update",{source:track.source,edits:changes,durationMs:scene.durationMs})
         .then(source=>{if(active){setCompiled({changes,source});preview(source);}})
         .catch(error=>{if(active)setNotice(String(error));});
     },120);
@@ -79,6 +80,16 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
     });
     if(patch.startMs!==undefined && Number.isFinite(patch.startMs))seek(patch.startMs);
   }
+  function mergeWithPrevious(upper:Row,lower:Row){
+    setEdits(all=>({
+      ...all,
+      [upper.line]:{...upper,text:upper.text+"\n"+lower.text},
+      [lower.line]:{...lower,text:""},
+    }));
+    setMergedLines(all=>new Set(all).add(lower.line));
+    setSelected(upper.line);
+    requestAnimationFrame(()=>textInput.current?.focus());
+  }
   async function commit(file:boolean){
     if(!ready || !compiled)return;
     setWorking(true);
@@ -90,7 +101,7 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
       else setNotice("프로젝트에 저장하지 못했습니다.");
     }catch(e){setNotice(String(e));}finally{setWorking(false);}
   }
-  const visibleStart=(rows:Row[])=>Math.min(...rows.filter(r=>(edits[r.line]??r).text.trim()||added.some(a=>a.templateLine===r.line)).map(r=>(edits[r.line]??r).startMs));
+  const visibleStart=(rows:Row[])=>Math.min(...rows.filter(r=>(edits[r.line]??r).text.trim()).map(r=>(edits[r.line]??r).startMs));
   const here=group && row ? visibleStart(group) : Infinity;
   const next=Array.from(groups.values()).filter(g=>g!==group).map(g=>({group:g,start:visibleStart(g)}))
     .filter(g=>Number.isFinite(g.start) && g.start>(Number.isFinite(here)?here:row?.startMs??at)).sort((a,b)=>a.start-b.start)[0];
@@ -108,33 +119,31 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
         void navigate(groups.get(Number(e.target.value)));
       }}>{Array.from(groups,([start,rows])=>{
         const first=edits[rows[0].line]??rows[0];
-        return <option key={start} value={start}>{sourceTime(first.startMs)} · {first.text}{rows.length>1 && ` (${rows.length}줄)`}</option>;
+        return <option key={start} value={start}>{sourceTime(first.startMs)} · {first.text}{rows.length>1 && ` (자막 ${rows.length}개)`}</option>;
       })}</select>
       <div className="ass-edit-rows">{group.map((original,index)=>{
         const current=edits[original.line]??original;
-        const label=group.length>1 ? `${index+1}번째 줄` : "ASS 자막 문구";
+        const previous=group[index-1];
+        const upper=previous && (edits[previous.line]??previous);
+        const label=group.length>1 ? `${index+1}번째 자막 문구` : "ASS 자막 문구";
         const deleting=!!edits[original.line] && !current.text.trim();
         return <div key={original.line} className="ass-edit-row">
           <div className="ass-row-actions">
             <strong>{label}</strong>
+            {upper?.text.trim() && current.text.trim() && upper.startMs===current.startMs && upper.endMs===current.endMs &&
+              <button type="button" className="text-button" disabled={stale||working}
+                title="위 자막의 스타일을 사용해 두 문구를 한 자막 안에 줄바꿈으로 합칩니다."
+                onClick={()=>mergeWithPrevious(upper,current)}>위 자막과 합치기</button>}
             <button type="button" className="text-button" disabled={stale||working}
-              onClick={()=>setAdded(all=>[...all,{id:crypto.randomUUID(),templateLine:original.line,text:""}])}>＋ 줄 추가</button>
-            <button type="button" className="text-button" disabled={stale||working}
-              onClick={()=>change(original,{text:deleting?original.text:""})}>{deleting?"원래 문구 복원":"이 줄 삭제"}</button>
+              onClick={()=>change(original,{text:deleting?original.text:""})}>{deleting?"원래 문구 복원":"이 자막 삭제"}</button>
           </div>
           <div className="cue-times">{(["startMs","endMs"] as const).map(key=><label key={key}>{key==="startMs"?"시작(초)":"끝(초)"}
             <input type="number" min={0} max={scene.durationMs/1000} step="0.01" value={Number.isFinite(current[key])?current[key]/1000:""}
               onChange={e=>change(original,{[key]:Math.round(e.target.valueAsNumber*1000)})}/></label>)}</div>
-          <textarea ref={original.line===row.line?textInput:undefined} aria-label={label} value={current.text} rows={group.length>1?2:3}
-            placeholder={deleting?"삭제한 줄 · 문구를 입력해 복원":undefined} onChange={e=>change(original,{text:e.target.value})}/>
+          <CaptionTextField inputRef={original.line===row.line?textInput:undefined} label={label} value={current.text}
+            rows={group.length>1?2:3} disabled={stale||working} placeholder={deleting?"삭제한 자막 · 문구를 입력해 복원":undefined}
+            onChange={text=>change(original,{text})}/>
           {current.text.includes("{\\") && <small>문장 중간의 중괄호에는 글자별 효과가 들어 있습니다.</small>}
-          {added.filter(r=>r.templateLine===original.line).map((r,i)=><div className="ass-added-row" key={r.id}>
-            <div className="ass-row-actions"><strong>새 줄 {i+1}</strong>
-              <button type="button" className="text-button" disabled={working}
-                onClick={()=>setAdded(all=>all.filter(item=>item.id!==r.id))}>추가 취소</button></div>
-            <textarea autoFocus rows={2} aria-label={`${label}에 추가한 새 줄 ${i+1}`} value={r.text} placeholder="새 줄에 표시할 문구"
-              onChange={e=>setAdded(all=>all.map(item=>item.id===r.id?{...item,text:e.target.value}:item))}/>
-          </div>)}
         </div>;
       })}</div>
     </>}

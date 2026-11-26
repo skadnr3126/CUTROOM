@@ -70,7 +70,7 @@ export function VisualTrack({ track, fresh, clips, selected, sceneId, scale, vie
           style={{ left: edge === "start" ? 0 : "100%" }} label={asset.name + " " + (edge === "start" ? "시작점" : "끝점")}
           homeDelta={video && edge === "start" ? -range.inMs : undefined}
           endDelta={video && edge === "end" ? (asset.durationMs ?? measured[asset.id] ?? range.outMs) - range.outMs : undefined}
-          scale={scale} disabled={busy} onSelect={() => select(c, edge === "start" ? c.startMs : endOf(c) - 1)}
+          scale={scale} disabled={busy} onSelect={() => select(c, edge === "start" ? c.startMs : endOf(c))}
           onCancel={cancel} onDelete={() => remove(c)} onDelta={(delta, commit) => resize(c, edge, delta, commit)} />)}
       </div>;
     })}

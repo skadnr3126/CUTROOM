@@ -628,14 +628,18 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
             <button className="button compact" disabled={busy || !selected || !scene} onClick={() => {
               if (scene && selected) void onSceneTool(scene, { type: "duplicateClip", clipId: selected.id });
             }}>클립 복제</button>
-            {scene && selected && byId.get(selected.assetId)?.kind === "video" &&
-              <CutRangeControls key={scene.id + ":" + scene.revision + ":" + selected.id} clip={selected} playhead={at}
-                sourceMs={byId.get(selected.assetId)?.durationMs ?? measured[selected.assetId]} busy={busy || previewingNeighbor}
-                pause={() => setPlaying(false)} cut={async (startMs, endMs, disposition) => {
+            {scene && section && selected &&
+              <CutRangeControls key={scene.id + ":" + scene.revision + ":" + selected.track}
+                track={selected.track} clips={peers} durationMs={section.durationMs} playhead={at} busy={busy}
+                sourceRange={clip => {
+                  const asset = byId.get(clip.assetId);
+                  return asset?.kind === "video" ? videoRange(clip, clip.durationMs, asset.durationMs ?? measured[asset.id]) : undefined;
+                }}
+                pause={() => setPlaying(false)} cut={async (operation, startMs) => {
                   setPlaying(false);
                   const endPosition = positionRef.current;
-                  const saved = await onClipEdit(scene, { type: "cutClipRange", disposition, range: { clipId: selected.id, startMs, endMs } });
-                  if (saved && positionRef.current === endPosition) scrubSection(selected.startMs + startMs);
+                  const saved = await onClipEdit(scene, operation);
+                  if (saved && positionRef.current === endPosition) scrubSection(startMs);
                 }} />}
             <button className="button compact" disabled={busy || (!selected && !(picked?.track === "audio" && scene?.audio))}
               onClick={() => { if (selected) changeItems(removeClip(items,selected)); else if (scene) onChangePlacement(scene.id,"audio",null); }}>

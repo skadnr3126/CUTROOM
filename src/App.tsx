@@ -312,8 +312,8 @@ function Editor({session, initialSeek}: {session:ProjectSession; initialSeek?:Ed
             if (!next) return false;
             rebaseTimelineDrafts(next);
             setMode("timeline");
-            if (operation.type === "cutClipRange") {
-              setNotice({ text: operation.disposition === "library"
+            if (operation.type === "cutClipRange" || operation.type === "deleteTrackRange") {
+              setNotice({ text: operation.type === "cutClipRange" && operation.disposition === "library"
                 ? "선택 범위를 잘라내고 소스 보관함에 저장했습니다." : "선택 범위를 타임라인에서 삭제했습니다." });
             }
             return true;
