@@ -7,10 +7,10 @@ type Props = {
   clip: BgmClip;
   duration: number;
   busy: boolean;
-  save: (clip: BgmClip) => void;
+  onChange: (range: BgmSourceRange | null) => void;
 };
 
-export function BgmSourceRange({clip, duration, busy, save}: Props) {
+export function BgmSourceRange({clip, duration, busy, onChange}: Props) {
   const bar = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [draft, setDraft] = useState<BgmSourceRange>();
@@ -30,7 +30,7 @@ export function BgmSourceRange({clip, duration, busy, save}: Props) {
     if (!commit) {setDraft(next);return;}
     setDraft(undefined);
     if (next.inMs !== saved.inMs || next.outMs !== saved.outMs) {
-      save({...clip,sourceRange:next.inMs===0 && next.outMs===duration ? null : next});
+      onChange(next.inMs === 0 && next.outMs === duration ? null : next);
     }
   }
   function drawn(x: number) {
@@ -62,6 +62,6 @@ export function BgmSourceRange({clip, duration, busy, save}: Props) {
             Math.min(duration,Math.max(saved.inMs+1,saved.outMs+delta))},commit)}/>;
       })}
     </div>
-    <button className="button compact" disabled={busy || !clip.sourceRange} onClick={()=>save({...clip,sourceRange:null})}>곡 전체 사용</button>
+    <button className="button compact" disabled={busy || !clip.sourceRange} onClick={()=>onChange(null)}>곡 전체 사용</button>
   </div>;
 }

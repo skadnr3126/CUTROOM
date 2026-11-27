@@ -65,12 +65,14 @@ const bgmClip = z.object({
   start:bgmAnchor, end:bgmAnchor,
   volume:z.number().int().min(0).max(100),
   fadeInMs:z.number().int().nonnegative(), fadeOutMs:z.number().int().nonnegative(),
+  sourceDurationMs:z.number().int().positive().optional()
+    .describe("Full measured source duration in milliseconds. Keep the returned value when editing. Cutroom fills this from asset metadata for new or resized clips."),
   sourceRange:z.object({inMs:z.number().int().nonnegative(), outMs:z.number().int().positive()}).strict().nullable().optional()
-    .describe("Loop this excerpt of the original song in milliseconds. Omit or use null for the whole song.")
+    .describe("Use this excerpt of the original song (milliseconds). Its length limits the placement. Omit or use null for the whole song.")
 }).strict();
 const bgmProject = z.string().uuid().describe("Open project ID returned by list_bgm");
 tool("list_bgm", "List music in the source bin and all timeline BGM clips with their editable settings. Use timeline for scene IDs.", {});
-tool("set_bgm", "Add or update one timeline BGM. Unless a range is requested, place one source duration from the start, capped at timeline end. Use list_bgm and timeline to calculate the numeric end offset. For new clips use a fresh UUID, volume 35 and zero fades unless requested. To update, copy the previous clip from list_bgm to expected and change only the desired fields in clip. Undoable.", {
+tool("set_bgm", "Add or update one timeline BGM. The maximum placement is one pass of the selected source excerpt or whole song, capped at timeline end. Use that length for new clips unless a shorter placement is requested. For more repetitions place additional clips. Use list_bgm and timeline for source duration and anchors. For new clips use a fresh UUID, volume 35 and zero fades unless requested. To update, copy the previous clip from list_bgm to expected and change only the desired fields in clip. Undoable.", {
   projectId:bgmProject, clip:bgmClip, expected:bgmClip.nullable().optional()
 });
 tool("delete_bgm", "Remove one timeline BGM clip, preserving its source music in the bin. Pass the clip previously read from list_bgm. Undoable.", {

@@ -15,21 +15,23 @@ pub(super) fn configure(
         let start = project
             .anchor_time(clip.start)
             .ok_or("BGM 시작 구간을 찾을 수 없습니다.")?;
-        let end = project
+        let anchor_end = project
             .anchor_time(clip.end)
             .ok_or("BGM 끝 구간을 찾을 수 없습니다.")?;
+        let source = project.assets.iter().find(|a| a.id == clip.asset_id);
+        let end = clip.playback_end(start, anchor_end, source.and_then(|a| a.duration_ms));
         let left = start.max(window.start);
         let right = end.min(window.end);
         if left >= right || clip.volume == 0 {
             continue;
         }
-        let source = project
-            .assets
-            .iter()
-            .find(|a| a.id == clip.asset_id)
-            .ok_or("BGM 소스를 찾을 수 없습니다.")?;
+        let source = source.ok_or("BGM 소스를 찾을 수 없습니다.")?;
         let mut input = source.path_in(media);
-        if let Some(range) = clip.source_range {
+        if clip.source_duration_ms.is_some() {
+            if let Some(range) = clip.source_range {
+                command.args(["-ss", &seconds(range.in_ms)]);
+            }
+        } else if let Some(range) = clip.source_range {
             if range.in_ms >= range.out_ms {
                 return Err("BGM 원본 범위를 확인해 주세요.".into());
             }
@@ -62,7 +64,10 @@ pub(super) fn configure(
                 .arg(&cut))?;
             input = cut;
         }
-        command.args(["-stream_loop", "-1", "-i"]).arg(input);
+        if clip.source_duration_ms.is_none() {
+            command.args(["-stream_loop", "-1"]);
+        }
+        command.arg("-i").arg(input);
         let i = filters.len() + 1;
         let length = end - start;
         let mut filter = format!(

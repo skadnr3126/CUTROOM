@@ -21,10 +21,12 @@ fn fixture(store: &ProjectStore) -> (Vec<Uuid>, Uuid) {
     let ids: Vec<_> = view.project.scenes.iter().map(|s| s.id).collect();
     let clip = json!({"id":Uuid::new_v4(),"assetId":song,"start":{"sceneId":ids[0],"offsetMs":100},
         "end":{"sceneId":ids[1],"offsetMs":null},"volume":80,"fadeInMs":60,"fadeOutMs":80});
+    // Simulate a project saved when a short song could intentionally repeat across scenes.
     store
-        .edit(
-            serde_json::from_value(json!({"type":"setBgm","expected":[],"clips":[clip]})).unwrap(),
-        )
+        .mutate(|p, _, _| {
+            p.bgm.push(serde_json::from_value(clip).unwrap());
+            Ok(())
+        })
         .unwrap();
     (ids, song)
 }
@@ -124,7 +126,8 @@ fn exports_continuous_music_across_scenes_and_seeks_for_scene_only() {
     let check_tone = |audio: &[i16], ms: usize, expected: usize| {
         let part = &audio[ms * 8..(ms + 40) * 8];
         if expected == 0 {
-            assert!(part.iter().all(|s| s.unsigned_abs() < 20));
+            let peak = part.iter().map(|s| s.unsigned_abs()).max().unwrap();
+            assert!(peak < 20, "at {ms}ms: expected silence, got peak {peak}");
             return;
         }
         let cycles = part.windows(2).filter(|p| p[0] < 0 && p[1] >= 0).count();
@@ -154,6 +157,23 @@ fn exports_continuous_music_across_scenes_and_seeks_for_scene_only() {
     let audio = decode(&slice);
     check_tone(&audio, 200, 900);
     check_tone(&audio, 600, 900);
+
+    clipped.bgm[0].source_duration_ms = Some(1000);
+    let once = dir.path().join("trimmed-once.mp4");
+    render::export(&ff, &store.media_dir(), &clipped, &once).unwrap();
+    let audio = decode(&once);
+    check_tone(&audio, 200, 900);
+    let peak = |start: usize| {
+        audio[start * 8..(start + 5) * 8]
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap()
+    };
+    assert!(peak(375) < peak(250) * 3 / 4);
+    // The first video frame follows one AAC priming frame (~21 ms) in this mux.
+    check_tone(&audio, 430, 0);
+    check_tone(&audio, 1000, 0);
 }
 
 #[test]
@@ -171,6 +191,9 @@ fn mcp_clip_edits_preserve_other_songs_and_reject_stale_changes() {
     let add = |p: &Project| save_clip(&store, p, store.id, None, Some(second.clone()));
     let p = add(&p).unwrap().project;
     assert_eq!(add(&p).unwrap().project.bgm.len(), 2);
+    let second = p.bgm[1].clone();
+    assert_eq!(p.anchor_time(second.end), Some(700));
+    assert_eq!(second.source_duration_ms, Some(1000));
     let mut revised = second.clone();
     revised.volume = 0;
     revised.fade_out_ms = 400;
@@ -194,4 +217,88 @@ fn mcp_clip_edits_preserve_other_songs_and_reject_stale_changes() {
         inventory(&p, store.id)["music"].as_array().unwrap().len(),
         1
     );
+}
+
+#[test]
+fn legacy_loops_survive_mix_edits_and_moves_until_resized() {
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (ids, _) = fixture(&store);
+    let mut p = store.load().unwrap();
+    let mut clip = p.bgm[0].clone();
+    clip.volume = 30;
+    p.edit_bgm(p.bgm.clone(), vec![clip.clone()]).unwrap();
+    assert_eq!(p.bgm[0].source_duration_ms, None);
+    clip.start.offset_ms = Some(200);
+    clip.end = Anchor {
+        scene_id: ids[2],
+        offset_ms: Some(100),
+    };
+    p.edit_bgm(p.bgm.clone(), vec![clip.clone()]).unwrap();
+    assert_eq!(p.bgm[0].source_duration_ms, None);
+
+    // Dragging the left edge earlier holds the right edge at 1450 ms.
+    clip.start.offset_ms = Some(0);
+    p.edit_bgm(p.bgm.clone(), vec![clip]).unwrap();
+    assert_eq!(p.bgm[0].source_duration_ms, Some(1000));
+    assert_eq!(p.anchor_time(p.bgm[0].start), Some(450));
+    assert_eq!(p.anchor_time(p.bgm[0].end), Some(1450));
+    let mut changed = p.bgm[0].clone();
+    changed.source_duration_ms = None;
+    changed.fade_out_ms = 100;
+    p.edit_bgm(p.bgm.clone(), vec![changed]).unwrap();
+    assert_eq!(p.bgm[0].source_duration_ms, Some(1000));
+}
+
+#[test]
+fn capped_scene_end_follows_until_source_exhaustion_and_left_trim_pins_visible_end() {
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    let (ids, _) = fixture(&store);
+    let mut p = store.load().unwrap();
+    let mut clip = p.bgm[0].clone();
+    clip.id = Uuid::new_v4();
+    clip.end = Anchor {
+        scene_id: ids[0],
+        offset_ms: None,
+    };
+    p.edit_bgm(p.bgm.clone(), vec![clip]).unwrap();
+    assert_eq!(p.bgm[0].end.offset_ms, None);
+    assert_eq!(p.bgm[0].source_duration_ms, Some(1000));
+
+    p.scenes[0].settings.duration_ms = 2000;
+    let clip = p.bgm[0].clone();
+    let raw_end = p.anchor_time(clip.end).unwrap();
+    assert_eq!(raw_end, 2000);
+    assert_eq!(clip.playback_end(100, raw_end, None), 1100);
+    let mut oversize = clip.clone();
+    oversize.end = Anchor {
+        scene_id: ids[1],
+        offset_ms: Some(50),
+    };
+    assert!(p.edit_bgm(p.bgm.clone(), vec![oversize]).unwrap().is_none());
+    let mut left_trim = clip;
+    left_trim.start.offset_ms = Some(250);
+    p.edit_bgm(p.bgm.clone(), vec![left_trim]).unwrap();
+    assert_eq!(p.anchor_time(p.bgm[0].start), Some(250));
+    assert_eq!(p.anchor_time(p.bgm[0].end), Some(1100));
+}
+
+#[test]
+fn new_clip_uses_measured_original_length_if_asset_metadata_is_missing() {
+    let dir = tempdir().unwrap();
+    let store = ProjectStore::new(dir.path().into());
+    fixture(&store);
+    let mut p = store.load().unwrap();
+    p.assets[0].duration_ms = None;
+    let mut clip = p.bgm[0].clone();
+    clip.id = Uuid::new_v4();
+    assert!(p.edit_bgm(p.bgm.clone(), vec![clip.clone()]).is_err());
+    clip.source_duration_ms = Some(240);
+    p.edit_bgm(p.bgm.clone(), vec![clip]).unwrap();
+    assert_eq!(p.anchor_time(p.bgm[0].end), Some(340));
+    let mut wrong = p.bgm[0].clone();
+    wrong.source_duration_ms = Some(2500);
+    wrong.end.offset_ms = Some(580);
+    assert!(p.edit_bgm(p.bgm.clone(), vec![wrong]).unwrap().is_none());
 }

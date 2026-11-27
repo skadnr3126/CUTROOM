@@ -59,7 +59,12 @@ export type Scene = SceneSettings & { id: string; revision: number };
 export type GuidelineStyle = { id: string; name: string; text: string; referenceIds: string[] };
 export type BgmAnchor = {sceneId: string; offsetMs: number | null};
 export type BgmSourceRange = {inMs: number; outMs: number};
-export type BgmClip = {id: string; assetId: string; start: BgmAnchor; end: BgmAnchor; volume: number; fadeInMs: number; fadeOutMs: number; sourceRange?: BgmSourceRange | null};
+export type BgmClip = {
+  id: string; assetId: string; start: BgmAnchor; end: BgmAnchor;
+  volume: number; fadeInMs: number; fadeOutMs: number;
+  sourceRange?: BgmSourceRange | null;
+  sourceDurationMs?: number;
+};
 export type Project = { bgm?: BgmClip[]; folders?: SourceFolder[]; timelineJobs?: string[]; title: string; guidelineStyles: GuidelineStyle[]; selectedStyleId: string | null; guidelinesRevision: number; scenes: Scene[]; assets: Asset[] };
 type View = { mediaExtensions: string[]; project: Project; mediaDir: string; exportAvailable: boolean;
   undo: { token: string; sceneId: string | null; removesScene: boolean } | null };

@@ -25,7 +25,7 @@ import { SourceBin } from "./SourceBin";
 import { StageLayout } from "./EditorLayout";
 import type { SceneRename } from "./SceneTitleInput";
 import { TimelineOverview } from "./TimelineOverview";
-import { anchorTime } from "./bgm";
+import { bgmBounds } from "./bgm";
 import type { BgmClip, BgmSourceRange } from "./project";
 import { TimelineRuler } from "./TimelineRuler";
 import { useTimelineZoom } from "./useTimelineZoom";
@@ -272,7 +272,9 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   }
 
   const time = Math.max(playbackStart, Math.min(position, playbackEnd));
-  const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({clip, start:anchorTime(clip.start,sections), end:anchorTime(clip.end,sections)})), [project.bgm,sections]);
+  const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({
+    clip, ...bgmBounds(clip, sections, byId.get(clip.assetId)?.durationMs),
+  })), [project.bgm, sections, byId]);
   const visibleSpans = scope === "detail" && !transitionMode ? detail : spans;
   const currentIndex = visibleSpans.findIndex((span) => Math.min(time, playbackEnd - 1) < span.end);
   const current = visibleSpans[currentIndex] ?? visibleSpans[visibleSpans.length - 1];
@@ -568,7 +570,8 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   if (!asset || time < start || time >= end) return null;
                   const fadeIn = clip.fadeInMs ? Math.min(1,(time-start)/Math.min(end-start,clip.fadeInMs)) : 1;
                   const fadeOut = clip.fadeOutMs ? Math.min(1,(end-time)/Math.min(end-start,clip.fadeOutMs)) : 1;
-                  return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} seekVersion={seekVersion.current} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
+                  return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} seekVersion={seekVersion.current}
+                    loop={clip.sourceDurationMs == null} sourceRange={clip.sourceRange} time={(time-start)/1000}
                     playing={playing} rate={previewRate} volume={clip.volume/100*fadeIn*fadeOut}/>;
                 })}
                 {audio && current && <SyncedAudio key={`${current.owner.id}:${audio.id}`} url={sourceUrl(mediaDir, audio)}
@@ -864,17 +867,17 @@ function SyncedAudio({ url, time, playing, rate, seekVersion, loop = false, volu
   function sync(element: HTMLAudioElement) {
     if (!element.readyState) return;
     if (element.playbackRate !== rate) element.playbackRate = rate;
-    const hasDuration = Number.isFinite(element.duration);
     element.volume = volume;
-    const loopStart = sourceRange ? sourceRange.inMs/1000 : 0;
-    const loopEnd = sourceRange ? Math.min(element.duration, sourceRange.outMs/1000) : element.duration;
-    const target = loop && hasDuration && loopEnd > loopStart ? loopStart + time % (loopEnd-loopStart) :
-      hasDuration ? Math.min(time, Math.max(0, element.duration - 0.04)) : time;
-    const active = playing && (loop || !hasDuration || time < element.duration - 0.04);
+    const sourceStart = (sourceRange?.inMs ?? 0) / 1000;
+    const mediaEnd = Number.isFinite(element.duration) ? element.duration : Infinity;
+    const sourceEnd = sourceRange ? Math.min(mediaEnd, sourceRange.outMs / 1000) : mediaEnd;
+    const length = sourceEnd - sourceStart;
+    const target = loop && length > 0 ? sourceStart + time % length : Math.min(sourceStart + time, sourceEnd);
+    const active = playing && length > 0 && (loop || time < length);
     const tolerance = appliedSeek.current !== seekVersion ? 0.001 : active ? 0.28 : 0.035;
     appliedSeek.current = seekVersion;
     if (Math.abs(element.currentTime - target) > tolerance ||
-        (sourceRange && (element.currentTime < loopStart || element.currentTime >= loopEnd))) element.currentTime = target;
+        (sourceRange && active && (element.currentTime < sourceStart || element.currentTime >= sourceEnd))) element.currentTime = target;
     if (active && element.paused) void element.play().catch(() => {});
     if (!active && !element.paused) element.pause();
   }

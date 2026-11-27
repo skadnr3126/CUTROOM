@@ -3,6 +3,7 @@ use super::{Edit, ProjectStore, ProjectView};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
+mod placement;
 #[cfg(test)]
 mod tests;
 
@@ -26,6 +27,9 @@ pub(crate) struct Clip {
     pub fade_out_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_range: Option<SourceRange>,
+    // Present for single-pass clips. Older projects may intentionally loop music.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +50,7 @@ pub(super) fn save_clip(
     project: &Project,
     project_id: Uuid,
     expected: Option<&Clip>,
-    replacement: Option<Clip>,
+    mut replacement: Option<Clip>,
 ) -> Result<ProjectView, String> {
     if store.id != project_id {
         return Err("프로젝트가 바뀌었습니다. BGM 목록을 다시 조회해 주세요.".into());
@@ -62,10 +66,17 @@ pub(super) fn save_clip(
     let mut clips = project.bgm.clone();
     let index = clips.iter().position(|c| c.id == id);
     let current = index.map(|i| &clips[i]);
-    if current != replacement.as_ref() {
-        if current != expected {
+    if current != replacement.as_ref() && current != expected {
+        // A retry may still carry the original, oversized placement request.
+        if let Some(clip) = replacement.as_mut() {
+            project
+                .normalize_bgm_clip(clip, expected.filter(|old| old.asset_id == clip.asset_id))?;
+        }
+        if current != replacement.as_ref() {
             return Err("BGM이 변경되었습니다. 목록을 다시 조회해 주세요.".into());
         }
+    }
+    if current != replacement.as_ref() {
         match (index, replacement) {
             (Some(i), Some(clip)) => clips[i] = clip,
             (None, Some(clip)) => clips.push(clip),
@@ -97,7 +108,7 @@ impl Project {
     pub(super) fn edit_bgm(
         &mut self,
         expected: Vec<Clip>,
-        clips: Vec<Clip>,
+        mut clips: Vec<Clip>,
     ) -> Result<Option<super::Inverse>, String> {
         if self.bgm != expected {
             return Err("BGM이 변경되었습니다. 다시 시도해 주세요.".into());
@@ -106,50 +117,20 @@ impl Project {
             return Ok(None);
         }
         let mut ids = std::collections::HashSet::new();
-        for clip in &clips {
+        for clip in &mut clips {
             if !ids.insert(clip.id) {
                 return Err("중복된 BGM 클립입니다.".into());
             }
             if expected.contains(clip) {
                 continue;
             }
-            let source = self
-                .assets
-                .iter()
-                .find(|a| a.id == clip.asset_id && a.kind == Kind::Audio)
-                .ok_or("BGM 오디오 소스를 찾을 수 없습니다.")?;
             let prior = expected
                 .iter()
                 .find(|old| old.id == clip.id && old.asset_id == clip.asset_id);
-            if prior.is_none() && (source.removed_from_bin || source.missing) {
-                return Err("보관함에서 사용할 수 있는 음악을 선택해 주세요.".into());
-            }
-            if let Some(range) = clip.source_range {
-                if range.in_ms >= range.out_ms
-                    || source.duration_ms.is_none_or(|ms| range.out_ms > ms)
-                {
-                    return Err("곡 사용 범위는 원본 음악 길이 안에 있어야 합니다.".into());
-                }
-            }
-            for anchor in [clip.start, clip.end] {
-                let scene = &self.scenes[self.scene_index(anchor.scene_id)?];
-                if anchor
-                    .offset_ms
-                    .is_some_and(|ms| ms > scene.settings.duration_ms)
-                    && !prior.is_some_and(|old| anchor == old.start || anchor == old.end)
-                {
-                    return Err("BGM 지점이 지정한 구간 길이를 벗어납니다.".into());
-                }
-            }
-            let start = self
-                .anchor_time(clip.start)
-                .ok_or("BGM 시작 구간을 찾을 수 없습니다.")?;
-            let end = self
-                .anchor_time(clip.end)
-                .ok_or("BGM 끝 구간을 찾을 수 없습니다.")?;
-            if start >= end || clip.volume > 100 {
-                return Err("BGM 범위와 음량을 확인해 주세요.".into());
-            }
+            self.normalize_bgm_clip(clip, prior)?;
+        }
+        if clips == expected {
+            return Ok(None);
         }
         self.bgm = clips;
         Ok(Some(super::Inverse::Bgm {

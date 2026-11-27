@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import { TimeGrip } from "./TimeGrip";
 import { BgmSourceRange } from "./BgmSourceRange";
-import { anchorAt, anchorTime, moveBgm, type Sections } from "./bgm";
+import { anchorAt, anchorTime, bgmBounds, bgmSourceDuration, changeBgmSourceRange, moveBgm, resizeBgm, type Sections } from "./bgm";
 import { sourceDragType, sourceUrl, type Asset, type BgmAnchor, type BgmClip } from "./project";
 import { sourceTime } from "./videoTrim";
 import "./BgmTrack.css";
@@ -17,6 +17,7 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
   const [selected, select] = useState<string>();
   const [draft, setDraft] = useState<BgmClip>();
   const [pending, setPending] = useState<{ asset: Asset; start: BgmAnchor; id: string }>();
+  const [measured, setMeasured] = useState<{ url: string; durationMs: number }>();
   const [notice, setNotice] = useState("");
   function durationUnavailable() {
     setPending(undefined);
@@ -30,8 +31,11 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
   const move = useRef<{id: string; gripMs: number} | null>(null);
   const last = sections[sections.length-1];
   const active = clips.find(c => c.id === selected);
-  const activeStart = active ? anchorTime(active.start, sections) : 0;
-  const activeEnd = active ? anchorTime(active.end, sections) : 0;
+  const activeAsset = active && assets.get(active.assetId);
+  const knownDuration = active && bgmSourceDuration(active, activeAsset?.durationMs);
+  const measureUrl = activeAsset && !activeAsset.missing && !knownDuration ? sourceUrl(mediaDir, activeAsset) : undefined;
+  const activeDuration = knownDuration ?? (measureUrl === measured?.url ? measured?.durationMs : undefined);
+  const activeBounds = active && bgmBounds(active, sections, activeDuration);
   const songs = Array.from(assets.values()).filter(a => a.kind === "audio" && !a.removedFromBin && !a.missing);
   function atX(x: number) {return (x - lane.current!.getBoundingClientRect().left) / scale;}
   function place(assetId: string, start: BgmAnchor, durationMs: number) {
@@ -49,7 +53,7 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
       return;
     }
     const end = anchorAt(sections, from + durationMs, "end", 0, false);
-    const clip: BgmClip = {id:crypto.randomUUID(),assetId,start,end,volume:35,fadeInMs:0,fadeOutMs:0};
+    const clip: BgmClip = {id:crypto.randomUUID(),assetId,start,end,volume:35,fadeInMs:0,fadeOutMs:0,sourceDurationMs:durationMs};
     onChange([...clips,clip]); select(clip.id);
   }
   function add(asset: Asset, at: number) {
@@ -64,7 +68,9 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
     if (asset.durationMs && asset.durationMs > 0) place(asset.id, start, asset.durationMs);
     else setPending({ asset, start, id: crypto.randomUUID() });
   }
-  function save(clip: BgmClip) { onChange(clips.map(c => c.id === clip.id ? clip : c)); }
+  function save(clip: BgmClip) {
+    if (!clips.includes(clip)) onChange(clips.map(c => c.id === clip.id ? clip : c));
+  }
   function remove(id: string) { onChange(clips.filter(clip => clip.id !== id)); }
   function dragClip(event: DragEvent, commit: boolean) {
     if (busy || !move.current || !event.dataTransfer.types.includes(bgmDrag)) return;
@@ -73,7 +79,7 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect = "move";
-    const next = moveBgm(clip, sections, atX(event.clientX) - move.current.gripMs, 8/scale);
+    const next = moveBgm(clip, sections, atX(event.clientX) - move.current.gripMs, 8/scale, assets.get(clip.assetId)?.durationMs);
     if (commit) {
       move.current = null;
       setDraft(undefined);
@@ -82,20 +88,16 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
       setDraft(next);
     }
   }
-  function resized(clip: BgmClip, edge: "start" | "end", ms: number) {
-    const anchor = anchorAt(sections, ms, edge, 8/scale);
-    const next = {...clip,[edge]:anchor};
-    return anchorTime(next.start, sections) < anchorTime(next.end, sections) ? next : undefined;
-  }
   function handle(clip: BgmClip, edge: "start" | "end") {
-    const at = anchorTime(clip[edge],sections);
-    return <TimeGrip className={"bgm-edge "+edge} disabled={busy} scale={scale}
+    const duration = clip === active ? activeDuration : bgmSourceDuration(clip, assets.get(clip.assetId)?.durationMs);
+    const at = bgmBounds(clip, sections, duration)[edge];
+    return <TimeGrip className={"bgm-edge "+edge} disabled={busy || !duration} scale={scale}
       label={edge === "start" ? "BGM 시작점 조절" : "BGM 끝점 조절"} onSelect={()=>select(clip.id)}
       homeDelta={edge==="start"?-at:undefined} endDelta={edge==="end"?last.end-at:undefined}
       onCancel={()=>setDraft(undefined)} onDelta={(delta,commit)=>{
-        const next=resized(clip,edge,at+delta);
+        const next=resizeBgm(clip, sections, edge, anchorAt(sections, at + delta, edge, 8/scale), duration);
         setDraft(commit?undefined:next);
-        if (commit && next) save(next);
+        if (commit) save(next);
       }}/>;
   }
   return <>
@@ -110,7 +112,7 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
       {!clips.length && <span>BGM · 오디오를 여기에 놓으세요</span>}
       {clips.map(clip => {
         const shown = draft?.id === clip.id ? draft : clip;
-        const start = anchorTime(shown.start,sections), end = anchorTime(shown.end,sections);
+        const { start, end } = bgmBounds(shown, sections, assets.get(shown.assetId)?.durationMs);
         return <div className="bgm-row" key={clip.id}><div className="bgm-clip" data-active={active?.id===clip.id}
           onFocus={()=>select(clip.id)} onKeyDown={event=>{
             if (event.key !== "Delete" || event.defaultPrevented || event.nativeEvent.isComposing ||
@@ -143,12 +145,21 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
           setPending(undefined);
           place(pending.asset.id, pending.start, Math.round(e.currentTarget.duration * 1000));
         }} onError={durationUnavailable} />}
+      {measureUrl && !activeDuration && <audio key={measureUrl} preload="metadata" src={measureUrl}
+        onLoadedMetadata={e => {
+          const durationMs = Math.round(e.currentTarget.duration * 1000);
+          if (Number.isFinite(durationMs) && durationMs > 0) setMeasured({ url: measureUrl, durationMs });
+        }}/>}
       {(pending || notice) && <span role="status">{pending ? "원본 음악 길이 확인 중…" : notice}</span>}
-      {active && <>
-        {(["start","end"] as const).map(edge => <label key={edge}>{edge === "start" ? "시작" : "끝"} <select disabled={busy} value={active[edge].sceneId}
-          onChange={e => save({...active,[edge]:{sceneId:e.target.value,offsetMs:edge==="end"?null:0}})}>
-          {sections.map(s => <option key={s.scene.id} value={s.scene.id} disabled={edge==="start"?s.start>=activeEnd:s.end<=activeStart}>
-            {s.scene.name || "구간 "+(s.index+1)}</option>)}</select></label>)}
+      {active && activeBounds && <>
+        {(["start","end"] as const).map(edge => {
+          const anchor = active[edge];
+          const shown = anchorTime(anchor, sections) === activeBounds[edge] ? anchor : anchorAt(sections, activeBounds[edge], edge, 0);
+          return <label key={edge}>{edge === "start" ? "시작" : "끝"} <select disabled={busy || !activeDuration} value={shown.sceneId}
+            onChange={e => save(resizeBgm(active, sections, edge, {sceneId:e.target.value,offsetMs:edge==="end"?null:0}, activeDuration))}>
+            {sections.map(s => <option key={s.scene.id} value={s.scene.id} disabled={edge==="start"?s.start>=activeBounds.end:s.end<=activeBounds.start}>
+              {s.scene.name || "구간 "+(s.index+1)}</option>)}</select></label>;
+        })}
         {(["volume","fadeInMs","fadeOutMs"] as const).map(field => {
           const volume = field==="volume", factor=volume?1:1000;
           return <label key={field}>{volume?"음량 %":field==="fadeInMs"?"페이드 인(초)":"페이드 아웃(초)"} <input
@@ -159,7 +170,8 @@ export function BgmTrack({sections, clips, assets, scale, busy, dragAsset, time,
             } else input.value=String(active[field]/factor);}}/></label>;
         })}
         <button className="button compact" disabled={busy} onClick={()=>remove(active.id)}>BGM 삭제 <kbd>Delete</kbd></button>
-        <BgmSourceRange key={active.id} clip={active} duration={assets.get(active.assetId)?.durationMs ?? 0} busy={busy} save={save}/>
+        <BgmSourceRange key={active.id} clip={active} duration={activeDuration ?? 0} busy={busy}
+          onChange={range => { if (activeDuration) save(changeBgmSourceRange(active, range, sections, activeDuration)); }}/>
       </>}
     </div>
   </>;
