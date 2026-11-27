@@ -6,7 +6,7 @@ use super::{
 };
 use serde_json::json;
 
-const SOURCE: &str = r#"[Script Info]
+pub(super) const SOURCE: &str = r#"[Script Info]
 ScriptType: v4.00+
 PlayResX: 1280
 PlayResY: 720
@@ -435,7 +435,8 @@ fn ass_edit_preserves_design_roundtrip_and_undo() {
                 line: rows[0].line,
                 start_ms: 2000,
                 end_ms: 1000,
-                text: "x".into()
+                text: "x".into(),
+                center: None,
             }],
             4000,
             None

@@ -1,7 +1,7 @@
 import type { CaptionCue, Scene } from "./project";
 import { invoke } from "./projectSession";
 
-export type AssRow = CaptionCue & { line: number };
+export type AssRow = CaptionCue & { line: number; center?: { x: number; y: number } };
 export type AssTrack = NonNullable<Scene["captionAss"]>;
 
 const parsedTracks = new WeakMap<AssTrack, Promise<AssRow[]>>();

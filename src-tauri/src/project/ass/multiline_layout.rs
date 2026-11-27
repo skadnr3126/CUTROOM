@@ -14,6 +14,19 @@ pub(super) fn paired_prefix(
         return None;
     }
     let (coords, x, y) = static_slot(template)?;
+    let (_, other_y) = paired_slot(source, events, template, include_peer)?;
+    let mut prefix = template.prefix.to_owned();
+    prefix.replace_range(coords, &format!("{x},{}", (y + other_y) / 2.0));
+    Some(prefix)
+}
+
+pub(super) fn paired_slot(
+    source: &str,
+    events: &[Event<'_>],
+    template: &Event<'_>,
+    include_peer: impl Fn(usize) -> bool,
+) -> Option<(usize, f64)> {
+    let (_, x, y) = static_slot(template)?;
     let (size, scale, alignment) = new_rows::style_metrics(source, template);
     if !(4..=6).contains(&alignment) {
         return None;
@@ -30,15 +43,13 @@ pub(super) fn paired_prefix(
         let distance = (other_y - y).abs();
         // Avoid unrelated labels laid out in separate columns or far apart.
         (other_x == x && distance > 0.0 && distance <= 2.0 * size * scale / 100.0)
-            .then_some(other_y)
+            .then_some((peer.line, other_y))
     });
-    let other_y = peers.next()?;
+    let peer = peers.next()?;
     if peers.next().is_some() {
         return None;
     }
-    let mut prefix = template.prefix.to_owned();
-    prefix.replace_range(coords, &format!("{x},{}", (y + other_y) / 2.0));
-    Some(prefix)
+    Some(peer)
 }
 
 fn static_slot(e: &Event<'_>) -> Option<(std::ops::Range<usize>, f64, f64)> {
@@ -52,9 +63,10 @@ fn static_slot(e: &Event<'_>) -> Option<(std::ops::Range<usize>, f64, f64)> {
         .split(['{', '}', '\\'])
         .filter(|tag| !tag.is_empty());
     if !tags.into_iter().all(|tag| {
-        ["pos(", "fad(", "fscx", "fscy"]
-            .iter()
-            .any(|s| tag.starts_with(s))
+        tag == "an5"
+            || ["pos(", "fad(", "fscx", "fscy"]
+                .iter()
+                .any(|s| tag.starts_with(s))
     }) {
         return None;
     }

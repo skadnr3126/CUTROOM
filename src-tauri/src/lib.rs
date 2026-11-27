@@ -57,6 +57,7 @@ pub fn run() {
             project::ass_files::ass_save_file,
             project::ass::ass_rows,
             project::ass::ass_update,
+            project::ass::centering::ass_center_on_panel,
             project::project_render_source,
             project::project_clip_thumbnail,
             project::project_save_clip,

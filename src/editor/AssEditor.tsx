@@ -81,9 +81,12 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
     if(patch.startMs!==undefined && Number.isFinite(patch.startMs))seek(patch.startMs);
   }
   function mergeWithPrevious(upper:Row,lower:Row){
+    const center=upper.center && lower.center
+      ? {x:(upper.center.x+lower.center.x)/2,y:(upper.center.y+lower.center.y)/2}
+      : undefined;
     setEdits(all=>({
       ...all,
-      [upper.line]:{...upper,text:upper.text+"\n"+lower.text},
+      [upper.line]:{...upper,center,text:upper.text+"\n"+lower.text},
       [lower.line]:{...lower,text:""},
     }));
     setMergedLines(all=>new Set(all).add(lower.line));
@@ -101,6 +104,24 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
       else setNotice("프로젝트에 저장하지 못했습니다.");
     }catch(e){setNotice(String(e));}finally{setWorking(false);}
   }
+  async function centerOnPanel(line:number){
+    setWorking(true);
+    setNotice("배경과 자막 위치를 확인하고 있습니다…");
+    try {
+      const positions=await invoke<{line:number;center:NonNullable<Row["center"]>}[]>("ass_center_on_panel",{
+        source:track.source,edits:changes,durationMs:scene.durationMs,line,
+      });
+      setEdits(all=>{
+        const next={...all};
+        for(const {line,center} of positions){
+          const original=originals?.find(r=>r.line===line);
+          if(original)next[line]={...(all[line]??original),center};
+        }
+        return next;
+      });
+    } catch(error){setNotice(String(error));}
+    finally{setWorking(false);}
+  }
   const visibleStart=(rows:Row[])=>Math.min(...rows.filter(r=>(edits[r.line]??r).text.trim()).map(r=>(edits[r.line]??r).startMs));
   const here=group && row ? visibleStart(group) : Infinity;
   const next=Array.from(groups.values()).filter(g=>g!==group).map(g=>({group:g,start:visibleStart(g)}))
@@ -115,7 +136,7 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
     onCompositionStart={()=>autosave.setComposing(true)} onCompositionEnd={()=>autosave.setComposing(false)}>
     <h2>ASS 자막 편집 <small>{track.name}</small></h2>
     {row && group && <>
-      <select aria-label="편집할 ASS 자막" value={row.startMs} onChange={e=>{
+      <select aria-label="편집할 ASS 자막" disabled={working} value={row.startMs} onChange={e=>{
         void navigate(groups.get(Number(e.target.value)));
       }}>{Array.from(groups,([start,rows])=>{
         const first=edits[rows[0].line]??rows[0];
@@ -130,6 +151,8 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
         return <div key={original.line} className="ass-edit-row">
           <div className="ass-row-actions">
             <strong>{label}</strong>
+            <button type="button" className="text-button" disabled={stale||working||!valid||!current.text.trim()}
+              onClick={()=>void centerOnPanel(original.line)}>배경 중앙에 맞추기</button>
             {upper?.text.trim() && current.text.trim() && upper.startMs===current.startMs && upper.endMs===current.endMs &&
               <button type="button" className="text-button" disabled={stale||working}
                 title="위 자막의 스타일을 사용해 두 문구를 한 자막 안에 줄바꿈으로 합칩니다."
@@ -138,7 +161,7 @@ export function AssEditor({track,scene,revision,at,initialLine,close,save,remove
               onClick={()=>change(original,{text:deleting?original.text:""})}>{deleting?"원래 문구 복원":"이 자막 삭제"}</button>
           </div>
           <div className="cue-times">{(["startMs","endMs"] as const).map(key=><label key={key}>{key==="startMs"?"시작(초)":"끝(초)"}
-            <input type="number" min={0} max={scene.durationMs/1000} step="0.01" value={Number.isFinite(current[key])?current[key]/1000:""}
+            <input type="number" disabled={working||stale} min={0} max={scene.durationMs/1000} step="0.01" value={Number.isFinite(current[key])?current[key]/1000:""}
               onChange={e=>change(original,{[key]:Math.round(e.target.valueAsNumber*1000)})}/></label>)}</div>
           <CaptionTextField inputRef={original.line===row.line?textInput:undefined} label={label} value={current.text}
             rows={group.length>1?2:3} disabled={stale||working} placeholder={deleting?"삭제한 자막 · 문구를 입력해 복원":undefined}

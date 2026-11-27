@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub(crate) mod centering;
 mod flow_rows;
 mod multiline_layout;
 mod new_rows;
@@ -17,6 +18,8 @@ pub(crate) struct Row {
     pub start_ms: u64,
     pub end_ms: u64,
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub center: Option<centering::Point>,
 }
 
 struct Event<'a> {
@@ -179,6 +182,7 @@ pub(crate) fn ass_rows(source: String) -> Result<Vec<Row>, String> {
             start_ms: e.from,
             end_ms: e.to,
             text: e.body.replace("\\N", "\n"),
+            center: None,
         })
         .collect();
     flow_rows::editor_order(&source, &mut rows);
@@ -235,15 +239,15 @@ pub(crate) fn ass_update(
                 .iter()
                 .any(|r| r.line == line && r.text.trim().is_empty())
         });
+        let mut prefix = prefix.unwrap_or_else(|| e.prefix.to_owned());
+        if let Some(center) = edit.center {
+            prefix = centering::prefix(&prefix, center)?;
+        }
         lines[e.line] = rewrite(
             e,
             edit.start_ms,
             edit.end_ms,
-            &format!(
-                "{}{}",
-                prefix.as_deref().unwrap_or(e.prefix),
-                edit.text.replace('\n', "\\N")
-            ),
+            &format!("{}{}", prefix, edit.text.replace('\n', "\\N")),
         );
     }
     // A panel spanning exactly a group of captions follows the group's outer edges.

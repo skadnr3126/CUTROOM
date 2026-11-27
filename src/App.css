@@ -378,7 +378,8 @@ textarea::placeholder { color: #8e9b8f; }
 .ass-edit-rows { max-height: 50vh; overflow-y: auto; }
 .ass-edit-row + .ass-edit-row { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .ass-edit-row strong { font-size: 12px; }
-.ass-row-actions { display: flex; justify-content: space-between; align-items: center; }
+.ass-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.ass-row-actions strong { margin-right: auto; }
 .caption-editor select { max-width: 100%; }
 .caption-editor footer { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .caption-editor footer .button:nth-last-child(2) { margin-left: auto; }
