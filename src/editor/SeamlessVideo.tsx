@@ -49,19 +49,20 @@ function guardOutpoint(video: HTMLVideoElement, canvas: HTMLCanvasElement, endMs
   return () => video.cancelVideoFrameCallback(callback);
 }
 
-function VideoSlot({ source, slot, visible, playing, rate, guardEnd, ready, fail }: {
+function VideoSlot({ source, slot, visible, playing, rate, seekVersion, guardEnd, ready, fail }: {
   source: PreviewVideoSource;
   slot: Slot;
   visible: boolean;
   playing: boolean;
   rate: number;
+  seekVersion: number;
   guardEnd?: number;
   ready: () => void;
   fail: () => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const surface = useRef<HTMLCanvasElement>(null);
-  const positioned = useRef(false);
+  const appliedSeek = useRef<number | undefined>(undefined);
   const reportedDuration = useRef<number | undefined>(undefined);
 
   useLayoutEffect(() => {
@@ -97,10 +98,11 @@ function VideoSlot({ source, slot, visible, playing, rate, guardEnd, ready, fail
     const end = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.001) : Infinity;
     const target = Math.min(seconds, end);
     const play = slot === "current" && playing && seconds < end;
-    // Land on the exact inpoint before allowing the wider running-clock tolerance.
-    const tolerance = !positioned.current ? 0.001 : play ? 0.28 : 0.016;
-    if (!video.seeking && Math.abs(video.currentTime - target) > tolerance) video.currentTime = target;
-    positioned.current = true;
+    // An explicit jump must land even if it falls inside the normal drift tolerance.
+    const seekChanged = appliedSeek.current !== seekVersion;
+    const tolerance = seekChanged ? 0.001 : play ? 0.28 : 0.016;
+    if ((seekChanged || !video.seeking) && Math.abs(video.currentTime - target) > tolerance) video.currentTime = target;
+    appliedSeek.current = seekVersion;
     if (slot === "current" && !video.seeking && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) ready();
     if (play && video.paused) void video.play().catch(() => {});
     else if (!play && !video.paused) video.pause();
@@ -116,8 +118,8 @@ function VideoSlot({ source, slot, visible, playing, rate, guardEnd, ready, fail
   </>;
 }
 
-export function SeamlessVideo({ current, next, playing, rate }: {
-  current: PreviewVideoSource; next?: PreviewVideoSource; playing: boolean; rate: number;
+export function SeamlessVideo({ current, next, playing, rate, seekVersion }: {
+  current: PreviewVideoSource; next?: PreviewVideoSource; playing: boolean; rate: number; seekVersion: number;
 }) {
   const [presented, setPresented] = useState<PreviewVideoSource>();
   const [failed, setFailed] = useState<string>();
@@ -142,7 +144,7 @@ export function SeamlessVideo({ current, next, playing, rate }: {
   }
   return <>
     {slots.map(({ source, slot }) => <VideoSlot key={decoderKey(source)} source={source} slot={slot}
-      rate={rate} playing={playing} guardEnd={slot === "current" ? guardEnd : undefined}
+      rate={rate} playing={playing} seekVersion={seekVersion} guardEnd={slot === "current" ? guardEnd : undefined}
       visible={failed !== key && (slot === "held" || (slot === "current" && !held))} ready={ready} fail={fail} />)}
     {failed === key && <p className="preview-error">이 영상 소스를 재생할 수 없습니다.</p>}
   </>;

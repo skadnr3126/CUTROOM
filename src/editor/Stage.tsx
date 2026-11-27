@@ -29,6 +29,7 @@ import { anchorTime } from "./bgm";
 import type { BgmClip, BgmSourceRange } from "./project";
 import { TimelineRuler } from "./TimelineRuler";
 import { useTimelineZoom } from "./useTimelineZoom";
+import { useTimelinePlayback } from "./useTimelinePlayback";
 import { ClipMenu, type MenuAction } from "./ClipMenu";
 import { sourceTime, videoRange } from "./videoTrim";
 import { overlayPlaybackRuns } from "./overlayPlaybackRuns";
@@ -133,13 +134,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const transitionMode = scope === "detail" && showTransitions && !!section;
   const playbackStart = transitionMode && previous ? Math.max(previous.start, selectedStart - transitionSideMs) : timelineStart;
   const playbackEnd = transitionMode && following ? Math.min(following.end, timelineEnd + transitionSideMs) : timelineEnd;
-  const requestedPosition = useRef<{ id: string; time: number } | null>(null);
-  const [position, setPosition] = useState(0);
-  const [playing, setPlaying] = useState(false);
+  const selectedFromTimeline = useRef<string | null>(null);
+  const { position, positionRef, seek, seekVersion, playing, setPlaying } = useTimelinePlayback(
+    mode === "timeline", boundaryRun ? Math.min(boundaryRun.end - 1, playbackEnd) : playbackEnd, previewRate);
   const [picked, setPicked] = useState<{ sceneId: string; track: Track } | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
-  const positionRef = useRef(0);
-  const seekVersion = useRef(0);
   const byId = useMemo(() => new Map(project.assets.map((asset) => [asset.id, asset])), [project.assets]);
   const pickedAudio = picked?.track === "audio" && detail.some(piece => piece.scene.id === picked.sceneId);
   const volumeClip = selected ?? (pickedAudio && !working?.audio ? items.find(c => !c.track && c.id === picked.sceneId) : undefined);
@@ -168,21 +167,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   }
 
 
-  function seek(value: number) {
-    seekVersion.current++;
-    movePlayhead(value);
-  }
-
-  function movePlayhead(value: number) {
-    positionRef.current = value;
-    setPosition(value);
-  }
-
   useEffect(() => {
+    // Timeline navigation already positioned the transport. An external scene
+    // selection (e.g. in the script panel) opens at the start of that scene.
+    const fromTimeline = selectedFromTimeline.current;
+    selectedFromTimeline.current = null;
+    if (fromTimeline && fromTimeline === scene?.id) return;
     setPlaying(false);
-    const request = requestedPosition.current;
-    requestedPosition.current = null;
-    seek(request && request.id === scene?.id ? request.time : selectedStart);
+    seek(selectedStart);
   }, [scene?.id, selectedStart, selectionVersion]);
 
   // Returning to a zoomed timeline should reveal the selected edit point.
@@ -198,12 +190,17 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   }
   useEffect(() => { revealTime(positionRef.current); }, [scope, detailSceneId, selectionVersion, transitionMode]);
 
-  function selectOverview(id: string, at: number) {
-    setWatchRecording(false);
-    requestedPosition.current = id === scene?.id ? null : { id, time: at };
-    setPlaying(false);
+  function selectTimelineScene(id: string) {
+    selectedFromTimeline.current = id === scene?.id ? null : id;
     setPicked(null);
     onChooseScene(id);
+  }
+
+  function selectSceneAt(id: string, at: number, keepPlaying = false) {
+    setWatchRecording(false);
+    if (!keepPlaying) setPlaying(false);
+    setBoundaryRun(null);
+    selectTimelineScene(id);
     seek(at);
     onMode("timeline");
   }
@@ -215,21 +212,35 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     const target = sections.find(entry => entry.scene.id === request.sceneId);
     if (target) {
       pendingSeek.current = undefined;
-      selectOverview(request.sceneId, target.start + request.atMs);
+      selectSceneAt(request.sceneId, target.start + request.atMs);
     }
   }, [sections]);
 
   useCutroomEvent<EditorSeek>("cutroom-seek", async ({sceneId, atMs, session}) => {
     if ((await openSession()).session !== session) return;
     const target = sections.find(entry => entry.scene.id === sceneId);
-    if (target) selectOverview(sceneId, target.start + atMs);
+    if (target) selectSceneAt(sceneId, target.start + atMs);
   });
 
+  function sectionAt(ms: number) {
+    return sections.find(entry => ms < entry.end) ?? sections[sections.length - 1];
+  }
+
   function switchScope(next: typeof scope) {
-    setScope(next);
-    setPlaying(false);
     onMode("timeline");
-    if (next === "detail" && section && (position < section.start || position >= section.end)) seek(section.start);
+    if (next === scope) return;
+    setBoundaryRun(null);
+    if (next === "detail") {
+      const at = Math.max(0, Math.min(positionRef.current, duration));
+      const target = sectionAt(at);
+      if (target && target.scene.id !== scene?.id) {
+        setClipId(null);
+        setDraft(null);
+        setMenu(null);
+        selectTimelineScene(target.scene.id);
+      }
+    }
+    setScope(next);
   }
 
   function toggleTransitions() {
@@ -250,29 +261,15 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   }
 
   function goToSection(offset: number) {
-    const target = section && sections[section.index + offset];
+    const from = scope === "detail" ? section : sectionAt(positionRef.current);
+    const target = from && sections[from.index + offset];
     if (!target) return;
     setClipId(null);
     setDraft(null);
     setMenu(null);
-    selectOverview(target.scene.id, target.start);
+    selectSceneAt(target.scene.id, target.start, true);
+    if (scope === "all") revealTime(target.start);
   }
-
-  useEffect(() => {
-    if (!playing || mode !== "timeline") return;
-    const initial = positionRef.current;
-    const started = performance.now();
-    let frame = 0;
-    const tick = (now: number) => {
-      const end = boundaryRun ? Math.min(boundaryRun.end - 1, playbackEnd) : playbackEnd;
-      const next = Math.min(end, initial + (now - started) * previewRate);
-      movePlayhead(next);
-      if (next < end) frame = requestAnimationFrame(tick);
-      else setPlaying(false);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [playbackEnd, mode, playing, previewRate, boundaryRun]);
 
   const time = Math.max(playbackStart, Math.min(position, playbackEnd));
   const bgmRanges = useMemo(() => (project.bgm ?? []).map(clip => ({clip, start:anchorTime(clip.start,sections), end:anchorTime(clip.end,sections)})), [project.bgm,sections]);
@@ -287,17 +284,30 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
   const assTarget = assDraft && sections.find(s => s.scene.id === assDraft.scene.id);
   const assRows = useAssRows(section?.scene.captionAss);
   const captionStarts = useCaptionStarts(sections, playbackStart, playbackEnd);
-  const adjacent = adjacentCaptionStarts(captionStarts, time);
+  const lastCaptionJump = useRef<{ atMs: number; version: number; wallTime: number } | null>(null);
+  function captionTargets(ms: number) {
+    const targets = adjacentCaptionStarts(captionStarts, ms);
+    const last = lastCaptionJump.current;
+    // Allow consecutive backwards steps even though playback has advanced a few frames.
+    if (playing && last && last.version === seekVersion.current && targets.previous === last.atMs &&
+        performance.now() - last.wallTime < 1000) {
+      targets.previous = adjacentCaptionStarts(captionStarts, last.atMs).previous;
+    }
+    return targets;
+  }
+  const adjacent = captionTargets(time);
   function jumpToCaption(target: number | undefined) {
     if (target === undefined) return;
-    scrubTo(target);
+    setBoundaryRun(null);
+    seek(target);
+    lastCaptionJump.current = { atMs: target, version: seekVersion.current, wallTime: performance.now() };
     revealTime(target);
     scrollRef.current?.querySelector<HTMLInputElement>(".ruler-seek")?.focus({preventScroll:true});
   }
   const activeAss = current?.owner.captionAss;
   function editAss(target: NonNullable<typeof section>, at: number, line?: number) {
     if (!target.scene.captionAss || busy) return;
-    selectOverview(target.scene.id, target.start + at);
+    selectSceneAt(target.scene.id, target.start + at);
     setWatchRecording(false);
     setAssPreview(target.scene.captionAss.source);
     setAssDraft({scene:target.scene, at, line});
@@ -328,7 +338,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     if (index === undefined) {
       const atMs = Math.max(0, Math.min(target.durationMs - 1, Math.floor(ms)));
       setWatchRecording(false);
-      selectOverview(target.scene.id, target.start + atMs);
+      selectSceneAt(target.scene.id, target.start + atMs);
       setScope("detail");
       setClipId(null);
       setAddingCaption({scene: target.scene, atMs});
@@ -337,7 +347,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     const cues = sceneCaptions(target.scene);
     const entry = { cues, index };
     setWatchRecording(false);
-    selectOverview(target.scene.id, target.start + entry.cues[entry.index].startMs);
+    selectSceneAt(target.scene.id, target.start + entry.cues[entry.index].startMs);
     setScope("detail");
     setClipId(null);
     setCaptionDraft({ sceneId: target.scene.id, revision: target.scene.revision, ...entry });
@@ -346,6 +356,17 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
     if (!previewingNeighbor && playheadSection && time < playheadSection.end) openCaption(playheadSection, time - playheadSection.start);
   }
   useEffect(() => {
+    function sectionShortcut(event: KeyboardEvent) {
+      if (!event.ctrlKey || (event.key !== "ArrowLeft" && event.key !== "ArrowRight") ||
+          event.defaultPrevented || event.isComposing || event.altKey || event.metaKey || event.shiftKey ||
+          busy || liveTrack || mode !== "timeline" || menu || document.querySelector("dialog[open]") ||
+          event.target instanceof Element && event.target.closest(
+            'textarea, select, input:not([type="range"]), [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="dialog"], [role="menu"]')) return;
+      // Consume the chord before focused clip handles can interpret it as a trim.
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) goToSection(event.key === "ArrowLeft" ? -1 : 1);
+    }
     function shortcut(event: KeyboardEvent) {
       if (event.code === "Space") {
         if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
@@ -367,7 +388,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
         if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey ||
             busy || liveTrack || mode !== "timeline" || menu || document.querySelector("dialog[open]") ||
             event.target instanceof Element && event.target.closest('textarea, select, input:not([type="range"]), [contenteditable]:not([contenteditable="false"])')) return;
-        const targets = adjacentCaptionStarts(captionStarts, positionRef.current);
+        const targets = captionTargets(positionRef.current);
         event.preventDefault();
         jumpToCaption(event.code === "KeyA" ? targets.previous : targets.next);
         return;
@@ -392,10 +413,14 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
       event.preventDefault();
       addAtPlayhead();
     }
+    window.addEventListener("keydown", sectionShortcut, true);
     window.addEventListener("keydown", shortcut);
-    return () => window.removeEventListener("keydown", shortcut);
+    return () => {
+      window.removeEventListener("keydown", sectionShortcut, true);
+      window.removeEventListener("keydown", shortcut);
+    };
   }, [playheadSection, time, busy, captionDraft, assDraft, addingCaption, assRows, scope, mode, previewingNeighbor,
-    captionStarts, liveTrack, menu, pixelsPerMs, playbackStart, playbackEnd, playing, position, duration, onMode]);
+    captionStarts, liveTrack, menu, pixelsPerMs, playbackStart, playbackEnd, playing, position, duration, section, sections, onMode]);
   const hasPictureAbove = current?.owner.overlays?.some(c => {
     const t = Math.min(time-current.sectionStart,sections[current.index].durationMs-1);
     return t >= c.startMs && t < c.startMs+c.durationMs;
@@ -473,6 +498,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
 
   function togglePlay() {
     if (!duration) return;
+    lastCaptionJump.current = null;
     setBoundaryRun(null);
     if (!playing && (position < playbackStart || position >= playbackEnd)) seek(playbackStart);
     setPlaying(!playing);
@@ -531,7 +557,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                 ) : (
                   <div className="preview-layer" style={frameStyle(visualPlacement?.frame)}>
                     {currentVideo ? (
-                      <SeamlessVideo current={currentVideo} next={nextVideo} playing={playing} rate={previewRate} />
+                      <SeamlessVideo current={currentVideo} next={nextVideo} playing={playing} rate={previewRate} seekVersion={seekVersion.current} />
                     ) : (
                       !hasPictureAbove && <div className="picture-empty"><span aria-hidden="true">▷</span>{range ? "이 위치에는 영상 클립이 없습니다" : current ? "이 구간에 영상 소스를 넣어 보세요" : "대본을 추가하고 편집을 시작하세요"}</div>
                     )}
@@ -542,10 +568,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   if (!asset || time < start || time >= end) return null;
                   const fadeIn = clip.fadeInMs ? Math.min(1,(time-start)/Math.min(end-start,clip.fadeInMs)) : 1;
                   const fadeOut = clip.fadeOutMs ? Math.min(1,(end-time)/Math.min(end-start,clip.fadeOutMs)) : 1;
-                  return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
+                  return <SyncedAudio key={clip.id+":"+asset.id} url={sourceUrl(mediaDir,asset)} seekVersion={seekVersion.current} loop sourceRange={clip.sourceRange} time={(time-start)/1000}
                     playing={playing} rate={previewRate} volume={clip.volume/100*fadeIn*fadeOut}/>;
                 })}
                 {audio && current && <SyncedAudio key={`${current.owner.id}:${audio.id}`} url={sourceUrl(mediaDir, audio)}
+                  seekVersion={seekVersion.current}
                   volume={volume.previewGain(current.owner, null, currentScene?.audio?.volume)}
                   time={(localTime + (current.start - current.sectionStart) + (currentScene?.audio?.inMs ?? 0)) / 1000} playing={playing} rate={previewRate} />}
                 {current && overlays?.map(({ layer, key, start, next }) => {
@@ -561,6 +588,7 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
                   return (
                     <div className="preview-layer" key={key} style={frameStyle(layer)}>
                       <SeamlessVideo
+                        seekVersion={seekVersion.current}
                         current={{
                           url: sourceUrl(mediaDir, asset),
                           originMs: start - layer.inMs,
@@ -629,9 +657,11 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
               openCaption(playheadSection, cues[index].startMs, index);
             }}>자막 편집</button>}
           {scope === "all" ? <span className="panel-meta">{sections.length}개 구간 · {timelineTime(duration)}</span> : <div className="timeline-actions">
-            <button className="button compact" disabled={busy || !section || section.index === 0} onClick={() => goToSection(-1)}>이전 구간</button>
+            <button className="button compact" title="이전 구간 (Ctrl+←)" aria-keyshortcuts="Control+ArrowLeft"
+              disabled={busy || !section || section.index === 0} onClick={() => goToSection(-1)}>이전 구간</button>
             <span className="panel-meta">{section ? sceneLabel(section.scene, section.index) : "구간 –"}</span>
-            <button className="button compact" disabled={busy || !section || section.index + 1 >= sections.length} onClick={() => goToSection(1)}>다음 구간</button>
+            <button className="button compact" title="다음 구간 (Ctrl+→)" aria-keyshortcuts="Control+ArrowRight"
+              disabled={busy || !section || section.index + 1 >= sections.length} onClick={() => goToSection(1)}>다음 구간</button>
             <div className="clip-tools" role="group" aria-label="클립 편집 도구">
             <button className="button compact" disabled={busy || !allowSplit} title="재생바 위치에서 클립을 둘로 나누고 양쪽을 모두 유지합니다." onClick={() => {
               if (allowSplit && scene) {
@@ -706,8 +736,8 @@ export function Stage({ initialSeek, folderControls, recordingTrack, onSceneTool
         {scope === "all" ? <TimelineOverview sections={sections} assets={byId} mediaDir={mediaDir} selectedId={scene?.id}
           bgm={project.bgm ?? []} onBgmChange={clips => {setWatchRecording(false); onMode("timeline"); onBgmChange(clips);}}
           pixelsPerMs={pixelsPerMs} viewport={viewport} scrollRef={scrollRef} onSeek={scrubSection}
-          time={time} playing={playing} busy={busy} dragAsset={dragAsset} select={selectOverview} onImport={onImport}
-          onOpenDetail={(id, at) => { selectOverview(id, at); setScope("detail"); }}
+          time={time} playing={playing} busy={busy} dragAsset={dragAsset} select={selectSceneAt} onImport={onImport}
+          onOpenDetail={(id, at) => { selectSceneAt(id, at); setScope("detail"); }}
           onRemove={onRemoveScene} rename={sceneRename} onMenu={setMenu} onMove={onMoveScene}
           add={(id, asset) => { onChangePlacement(id, mediaTrack(asset), asset.id); finishDrag(); }} /> :
         <div className="timeline-scroll" ref={scrollRef}>
@@ -821,13 +851,15 @@ type SyncedAudioProps = {
   time: number;
   playing: boolean;
   rate: number;
+  seekVersion: number;
   loop?: boolean;
   volume?: number;
   sourceRange?: BgmSourceRange | null;
 };
 
-function SyncedAudio({ url, time, playing, rate, loop = false, volume = 1, sourceRange }: SyncedAudioProps) {
+function SyncedAudio({ url, time, playing, rate, seekVersion, loop = false, volume = 1, sourceRange }: SyncedAudioProps) {
   const ref = useRef<HTMLAudioElement>(null);
+  const appliedSeek = useRef<number | undefined>(undefined);
   const [failed, setFailed] = useState(false);
   function sync(element: HTMLAudioElement) {
     if (!element.readyState) return;
@@ -839,7 +871,9 @@ function SyncedAudio({ url, time, playing, rate, loop = false, volume = 1, sourc
     const target = loop && hasDuration && loopEnd > loopStart ? loopStart + time % (loopEnd-loopStart) :
       hasDuration ? Math.min(time, Math.max(0, element.duration - 0.04)) : time;
     const active = playing && (loop || !hasDuration || time < element.duration - 0.04);
-    if (Math.abs(element.currentTime - target) > (active ? 0.28 : 0.035) ||
+    const tolerance = appliedSeek.current !== seekVersion ? 0.001 : active ? 0.28 : 0.035;
+    appliedSeek.current = seekVersion;
+    if (Math.abs(element.currentTime - target) > tolerance ||
         (sourceRange && (element.currentTime < loopStart || element.currentTime >= loopEnd))) element.currentTime = target;
     if (active && element.paused) void element.play().catch(() => {});
     if (!active && !element.paused) element.pause();
